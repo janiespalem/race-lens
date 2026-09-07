@@ -94,6 +94,7 @@ def render_feed(
         driver_id: str | None = e.driver_id
         audio_url: str | None = None
         transcript: str | None = None
+        is_stewards_update = False
 
         if e.type == "SessionStarted":
             if e.payload.get("formation"):
@@ -199,6 +200,7 @@ def render_feed(
             msg = e.payload.get("message", "")
             category = e.payload.get("category", "")
             msg_up = msg.upper()
+            is_stewards_update = msg_up.startswith("FIA STEWARDS:")
             has_incident = "INCIDENT" in msg_up or "INVESTIGATION" in msg_up
             has_restart = "RACE WILL RESUME AT" in msg_up
             has_driver_flag = "Flag" in category and any(
@@ -218,7 +220,13 @@ def render_feed(
                     or "VIRTUAL SAFETY CAR" in msg_up
                 )
             )
-            if not (has_flag or has_incident or has_restart or has_driver_flag):
+            if not (
+                has_flag
+                or has_incident
+                or has_restart
+                or has_driver_flag
+                or is_stewards_update
+            ):
                 continue
             # Avoid duplicating SessionStatusChanged items that already cover SC/VSC/red flag
             dup = False
@@ -233,7 +241,9 @@ def render_feed(
             continue
 
         # Determine tag for frontend chip
-        if e.type in ("PitIn", "PitOut"):
+        if is_stewards_update:
+            tag = "STEWARDS"
+        elif e.type in ("PitIn", "PitOut"):
             tag = "PIT"
         elif e.type in ("SessionStarted", "SessionStatusChanged", "RaceControlMessage"):
             tag = "FLAG"

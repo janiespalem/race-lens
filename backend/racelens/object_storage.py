@@ -783,7 +783,10 @@ def _validate_feed(value: object) -> None:
             or not _integer(row["at_ms"])
             or (row["lap"] is not None and not _integer(row["lap"], maximum=500))
             or not _choice(row["kind"], _FEED_KINDS)
-            or not _choice(row["tag"], {"PIT", "FLAG", "FINISH", "FASTEST", "INFO", "PASS"})
+            or not _choice(
+                row["tag"],
+                {"PIT", "FLAG", "FINISH", "FASTEST", "INFO", "PASS", "STEWARDS"},
+            )
             or not _public_text(row["text"], maximum=1000)
             or (row["driver_id"] is not None and not _driver_id(row["driver_id"]))
             or (

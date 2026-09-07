@@ -164,7 +164,7 @@ export type FeedItem = {
   driver_id?: string | null
   text: string
   kind: string // 'status' | 'fastest_lap' | 'pit' | 'info' | ...
-  tag?: 'PIT' | 'FLAG' | 'FASTEST' | 'FINISH' | 'PASS' | 'INFO'
+  tag?: 'PIT' | 'FLAG' | 'FASTEST' | 'FINISH' | 'PASS' | 'INFO' | 'STEWARDS'
   audio_url?: string
   /** Whisper transcript of the team-radio clip, when available. */
   transcript?: string

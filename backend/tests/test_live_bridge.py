@@ -267,6 +267,25 @@ def test_live_records_accept_multiline_whisper_and_nullable_undercut_evidence():
     assert storage.validate_live_snapshot(snapshot, pointer=pointer, now=NOW) == snapshot
 
 
+def test_live_records_accept_official_stewards_feed_tag():
+    pointer, snapshot = _valid_records()
+    steward_item = {
+        "id": "stewards:per",
+        "at_ms": 1_000,
+        "lap": 30,
+        "kind": "RaceControlMessage",
+        "tag": "STEWARDS",
+        "text": "FIA STEWARDS: 5 SECOND TIME PENALTY FOR CAR 11 (PER)",
+        "driver_id": None,
+    }
+    snapshot["feed"] = {
+        "en": [steward_item],
+        "ru": [copy.deepcopy(steward_item)],
+    }
+
+    assert storage.validate_live_snapshot(snapshot, pointer=pointer, now=NOW) == snapshot
+
+
 def test_live_records_accept_source_backed_weather():
     pointer, snapshot = _valid_records()
     snapshot["race_state"]["weather"] = {
