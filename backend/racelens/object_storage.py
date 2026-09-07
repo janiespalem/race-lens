@@ -483,7 +483,8 @@ _INSIGHT_TYPES = {
 }
 _FEED_KINDS = {
     "SessionStarted", "SessionStatusChanged", "LapCompleted", "PitIn", "PitOut",
-    "RaceControlMessage", "RetirementDetected", "ON_TRACK", "UNDERCUT",
+    "RaceControlMessage", "RetirementDetected", "DriverStoppedChanged",
+    "DriverTroubleDetected", "ON_TRACK", "UNDERCUT",
 }
 _EVIDENCE_FIELDS = {
     "interval_s", "pace_delta_ms", "behind_last_lap_ms", "ahead_last_lap_ms",

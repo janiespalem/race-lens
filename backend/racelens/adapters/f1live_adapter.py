@@ -293,6 +293,7 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
     last_lap_ms: dict[str, int | None] = {}
     retirement_candidates: dict[str, tuple[int, int]] = {}
     stopped: dict[str, bool] = {}
+    yellow_times: list[int] = []
     last_status: str | None = None  # dedupe SessionStatus vs RCM-derived statuses
     session_path: str | None = None  # SessionInfo "Path", to build absolute radio audio_url
 
@@ -447,6 +448,9 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
         elif cat == "WeatherData":
             if weather := _parse_weather(payload):
                 events.append(event(sid, "WeatherUpdated", t_ms, source="f1live", **weather))
+        elif cat == "TrackStatus":
+            if emit_activity and str(payload.get("Message", "")).lower() == "yellow":
+                yellow_times.append(t_ms)
         elif cat == "RaceControlMessages":
             msgs = payload.get("Messages")
             items = msgs.values() if isinstance(msgs, dict) else (msgs or [])
@@ -522,6 +526,41 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
     for driver_id, (retired_at, lap) in retirement_candidates.items():
         if latest_ms - retired_at >= _RETIRE_CONFIRM_MS:
             events.append(event(sid, "RetirementDetected", retired_at, driver_id, lap=lap))
+
+    pit_times: dict[str, list[int]] = {}
+    for item in events:
+        if item.type == "PitIn" and item.driver_id:
+            pit_times.setdefault(item.driver_id, []).append(item.session_time_ms)
+    for driver_id in pos:
+        changes = [
+            item for item in events
+            if item.type == "PositionChanged" and item.driver_id == driver_id
+        ]
+        anchor = None
+        for change in changes:
+            current = change.payload["position"]
+            if (
+                anchor is None
+                or change.session_time_ms - anchor.session_time_ms > 10_000
+                or current <= anchor.payload["position"]
+            ):
+                anchor = change
+                continue
+            if (
+                current >= 15
+                and current - anchor.payload["position"] >= 8
+                and any(abs(change.session_time_ms - yellow) <= 5_000 for yellow in yellow_times)
+                and not any(
+                    change.session_time_ms - 10_000 <= pit <= change.session_time_ms
+                    for pit in pit_times.get(driver_id, [])
+                )
+            ):
+                events.append(event(
+                    sid, "DriverTroubleDetected", change.session_time_ms, driver_id,
+                    lap=laps.get(driver_id, 0) + 1,
+                    from_position=anchor.payload["position"], to_position=current,
+                ))
+                break
 
     events.sort(key=lambda e: (e.session_time_ms, e.event_id))
     return events
