@@ -212,7 +212,7 @@ class ReplayEngine:
 
         elif e.type == "LapCompleted":
             if (
-                state["session_status"] == "red_flag"
+                state["session_status"] in {"red_flag", "formation"}
                 and (e.lap or 0) > state["lap"]
                 and e.session_time_ms - state["status_since_ms"] >= 60_000
             ):
