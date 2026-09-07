@@ -164,3 +164,22 @@ def test_feed_session_started_ru():
     started = [i for i in feed if i["kind"] == "SessionStarted"]
     assert len(started) == 1
     assert "старт" in started[0]["text"].lower()
+
+
+def test_red_flag_feed_keeps_incident_visible_and_reports_stopped_driver():
+    events = [
+        event("race", "SessionStarted", 0),
+        event(
+            "race", "RaceControlMessage", 100_000, category="Other",
+            message="TURN 2 INCIDENT INVOLVING CARS 16 (LEC) AND 44 (HAM)",
+        ),
+        event("race", "DriverStoppedChanged", 110_000, "LEC", stopped=True),
+        event("race", "SessionStatusChanged", 120_000, status="red_flag"),
+        *(event("race", "PitIn", 130_000 + i, f"D{i}", lap=3) for i in range(22)),
+    ]
+
+    feed = render_feed(events, until_ms=200_000, limit=30)
+
+    assert not any(item["kind"] == "PitIn" for item in feed)
+    assert any("INCIDENT" in item["text"] for item in feed)
+    assert any(item["driver_id"] == "LEC" and "stopped" in item["text"] for item in feed)

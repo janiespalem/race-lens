@@ -357,3 +357,30 @@ def test_transient_retired_pulse_is_ignored(tmp_path):
     events = ingest_f1live(str(feed), session_id="test")
 
     assert not any(event.type == "RetirementDetected" for event in events)
+
+
+def test_rapid_position_loss_under_yellow_reports_trouble_but_not_pit_stop(tmp_path):
+    feed = tmp_path / "driver-trouble.txt"
+    feed.write_text("\n".join([
+        "['SessionStatus', {'Status': 'Started'}, '2026-07-05T15:00:00Z']",
+        "['DriverList', {'43': {'Tla': 'COL'}, '81': {'Tla': 'PIA'}}, '']",
+        "['TimingData', {'Lines': {'81': {'InPit': True}}}, "
+        "'2026-07-05T15:00:59Z']",
+        "['TimingData', {'Lines': {'43': {'Position': '5'}, "
+        "'81': {'Position': '6'}}}, '2026-07-05T15:01:00Z']",
+        "['TrackStatus', {'Status': '2', 'Message': 'Yellow'}, "
+        "'2026-07-05T15:01:04Z']",
+        "['TimingData', {'Lines': {'43': {'Position': '21'}, "
+        "'81': {'Position': '20'}}}, '2026-07-05T15:01:05Z']",
+    ]) + "\n", encoding="utf-8")
+
+    events = ingest_f1live(str(feed), session_id="test")
+    trouble = [item for item in events if item.type == "DriverTroubleDetected"]
+
+    assert [(item.driver_id, item.payload) for item in trouble] == [
+        ("COL", {"from_position": 5, "to_position": 21}),
+    ]
+    assert any(
+        item["driver_id"] == "COL" and "P5" in item["text"] and "P21" in item["text"]
+        for item in render_feed(events, until_ms=70_000)
+    )

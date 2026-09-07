@@ -25,6 +25,7 @@ EVENT_TYPES = {
     "RaceControlMessage",
     "RetirementDetected",
     "DriverStoppedChanged",
+    "DriverTroubleDetected",
     "WeatherUpdated",
 }
 

@@ -123,11 +123,15 @@ def render_feed(
                 driver_id = e.driver_id
 
         elif e.type == "PitIn":
+            if prev_status == "red_flag":
+                continue
             drv = e.driver_id or "?"
             text = f"{drv} заезжает в боксы" if lang == "ru" else f"{drv} pits"
             driver_id = e.driver_id
 
         elif e.type == "PitOut":
+            if prev_status == "red_flag":
+                continue
             drv = e.driver_id or "?"
             # Look for TyreStintUpdated from the same driver within 5 s after PitOut
             # using pre-built index + bisect for O(log n) lookup.
@@ -166,6 +170,22 @@ def render_feed(
         elif e.type == "RetirementDetected":
             drv = e.driver_id or "?"
             text = f"{drv} сходит с дистанции" if lang == "ru" else f"{drv} retires"
+            driver_id = e.driver_id
+
+        elif e.type == "DriverStoppedChanged" and e.payload.get("stopped"):
+            drv = e.driver_id or "?"
+            text = f"{drv} остановился на трассе" if lang == "ru" else f"{drv} stopped on track"
+            driver_id = e.driver_id
+
+        elif e.type == "DriverTroubleDetected":
+            drv = e.driver_id or "?"
+            start = e.payload.get("from_position")
+            end = e.payload.get("to_position")
+            text = (
+                f"{drv} резко откатывается: P{start} → P{end} под жёлтым флагом"
+                if lang == "ru"
+                else f"{drv} drops sharply: P{start} → P{end} under yellow"
+            )
             driver_id = e.driver_id
 
         elif e.type == "RaceControlMessage" and e.payload.get("category") == "Radio":
