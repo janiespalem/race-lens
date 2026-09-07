@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { getOvertake } from '../../api/client'
 import type { CommentaryItem, Insight } from '../../api/types'
 import { focusDriverIds } from '../../lib/insightFocus'
+import { evidenceData } from '../../lib/insightPresentation'
 import { NEUTRAL_STATUSES, writePersisted } from './replayTypes'
 
 type Props = {
@@ -65,17 +66,6 @@ function insightTitle(insight: Insight): string {
 function insightSubtitle(insight: Insight): string {
   const label = baseLabel(insight.type)
   return insight.severity === 'high' ? `${label} · HIGH` : label
-}
-
-function evidenceData(insight: Insight): { label: string; value: string }[] {
-  const items: { label: string; value: string }[] = []
-  const ev = insight.evidence
-  if (typeof ev.gap_s === 'number') items.push({ label: 'GAP', value: `${ev.gap_s.toFixed(1)}s` })
-  if (typeof ev.interval_s === 'number') items.push({ label: 'INT', value: `${ev.interval_s.toFixed(2)}s` })
-  if (typeof ev.pace_delta_ms === 'number')
-    items.push({ label: 'Δ PACE', value: `+${(ev.pace_delta_ms / 1000).toFixed(1)}/lap` })
-  if (typeof ev.tyre_age === 'number') items.push({ label: 'TYRES', value: `${ev.tyre_age} LAPS` })
-  return items
 }
 
 const SEVERITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 }

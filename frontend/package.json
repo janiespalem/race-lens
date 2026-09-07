@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "build:desktop": "tsc -b && vite build --mode desktop",
     "check:insight-focus": "node scripts/check-insight-focus.ts",
+    "check:insight-presentation": "node scripts/check-insight-presentation.ts",
     "check:live-lifecycle": "node scripts/check-live-lifecycle.ts",
     "check:weather": "node scripts/check-weather.ts",
     "check:dotd": "node scripts/check-dotd-order.ts",

@@ -8,7 +8,13 @@ def _state(rows: dict[str, tuple[float | None, int, int]]) -> dict:
         "lap": 40,
         "classification": list(rows),
         "drivers": {
-            d: {"interval_s": iv, "tyre_age_laps": age, "last_lap_ms": lap_ms, "in_pit": False}
+            d: {
+                "interval_s": iv,
+                "tyre_age_laps": age,
+                "last_lap_ms": lap_ms,
+                "recent_laps_ms": [lap_ms, lap_ms, lap_ms],
+                "in_pit": False,
+            }
             for d, (iv, age, lap_ms) in rows.items()
         },
     }
@@ -35,3 +41,11 @@ def test_fresh_tyres_no_undercut():
 def test_slow_attacker_is_no_threat():
     s = _state({"NOR": (None, 22, 78_000), "VER": (1.2, 20, 79_500)})
     assert detect_undercut_risk(s) == []
+
+
+def test_undercut_waits_for_three_clean_laps():
+    state = _state({"NOR": (None, 22, 78_000), "VER": (0.8, 20, 78_100)})
+    state["drivers"]["NOR"]["recent_laps_ms"] = [1_900_000]
+    state["drivers"]["VER"]["recent_laps_ms"] = [78_100]
+
+    assert detect_undercut_risk(state) == []

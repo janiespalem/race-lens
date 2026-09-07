@@ -19,6 +19,7 @@ from racelens.events.models import Event
 
 # Number of recent laps tracked per driver — used by short-horizon insight rules.
 RECENT_LAPS_WINDOW = 3
+MAX_RECENT_LAP_MULTIPLIER = 1.5
 
 _EVENT_PRIORITY = {
     "SessionStarted": 0,
@@ -203,12 +204,12 @@ class ReplayEngine:
 
         elif e.type == "SessionStatusChanged":
             new_status = p.get("status", state["session_status"])
+            if new_status != state["session_status"]:
+                for drv in state["drivers"].values():
+                    drv["recent_laps_ms"] = []
             state["session_status"] = new_status
             state["status_since_ms"] = e.session_time_ms
             state["restart_at_ms"] = None
-            if new_status in {"red_flag", "safety_car", "vsc"}:
-                for drv in state["drivers"].values():
-                    drv["recent_laps_ms"] = []
 
         elif e.type == "LapCompleted":
             if (
@@ -227,9 +228,13 @@ class ReplayEngine:
             lap_ms = p.get("lap_time_ms")
             if lap_ms is not None:
                 d["last_lap_ms"] = lap_ms
-                if d["best_lap_ms"] is None or lap_ms < d["best_lap_ms"]:
+                prior_best_ms = d["best_lap_ms"]
+                if prior_best_ms is None or lap_ms < prior_best_ms:
                     d["best_lap_ms"] = lap_ms
-                d["recent_laps_ms"] = (d["recent_laps_ms"] + [lap_ms])[-RECENT_LAPS_WINDOW:]
+                if prior_best_ms is None or lap_ms <= prior_best_ms * MAX_RECENT_LAP_MULTIPLIER:
+                    d["recent_laps_ms"] = (
+                        d["recent_laps_ms"] + [lap_ms]
+                    )[-RECENT_LAPS_WINDOW:]
             if d["tyre_age_laps"] is not None:
                 d["tyre_age_laps"] += 1
             state["lap"] = max(state["lap"], e.lap or 0)

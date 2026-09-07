@@ -115,6 +115,15 @@ _BASE_TYPES = (
     "DEGRADATION_TREND", "CLEAN_AIR_PACE_LEADER", "BATTLE_DETECTED",
 )
 
+_MODEL_TYPES = {
+    "TRAFFIC_RISK",
+    "PIT_WINDOW",
+    "SC_PIT_WINDOW",
+    "UNDERCUT_RISK",
+    "DEGRADATION_TREND",
+    "CLEAN_AIR_PACE_LEADER",
+}
+
 
 def _params(base: str, ins: dict[str, Any]) -> dict[str, Any]:
     ev = ins["evidence"]
@@ -154,7 +163,8 @@ def render(insight: dict[str, Any], lang: str = "en", level: str = "pro") -> str
     if base is None:
         return insight["type"]  # unknown types degrade gracefully
     template = TEMPLATES.get((base, lang, level)) or TEMPLATES[(base, "en", "pro")]
-    return template.format(**_params(base, insight))
+    text = template.format(**_params(base, insight))
+    return f"MODEL · {text}" if base in _MODEL_TYPES else text
 
 
 def render_all(insights: list[dict[str, Any]], lang: str = "en", level: str = "pro") -> list[dict]:
