@@ -100,11 +100,10 @@ class RaceReducerTest {
     }
 
     @Test
-    fun foregroundResumesAnInterruptedReplayLoad() {
-        assertEquals(false, shouldResumeReplay(requestActive = true, loading = true, snapshot = null))
-        assertEquals(true, shouldResumeReplay(requestActive = false, loading = true, snapshot = RaceSnapshot(1, 1, "green", emptyList())))
-        assertEquals(true, shouldResumeReplay(requestActive = false, loading = false, snapshot = null))
-        assertEquals(false, shouldResumeReplay(requestActive = false, loading = false, snapshot = RaceSnapshot(1, 1, "green", emptyList())))
+    fun foregroundResumesOnlyAnInterruptedReplayLoad() {
+        assertFalse(shouldResumeReplay(requestActive = true, loading = true))
+        assertTrue(shouldResumeReplay(requestActive = false, loading = true))
+        assertFalse(shouldResumeReplay(requestActive = false, loading = false))
     }
 
     @Test

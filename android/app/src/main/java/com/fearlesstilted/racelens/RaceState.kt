@@ -57,8 +57,7 @@ fun acceptSnapshot(frame: WatchFrame, snapshot: RaceSnapshot) = frame.copy(
 fun acceptsReplayCompletion(generation: Long, currentGeneration: Long, requested: WatchTarget, current: WatchTarget) =
     generation == currentGeneration && requested.replayIdentity() == current.replayIdentity() && current.mode == WatchMode.REPLAY
 
-fun shouldResumeReplay(requestActive: Boolean, loading: Boolean, snapshot: RaceSnapshot?) =
-    !requestActive && (loading || snapshot == null)
+fun shouldResumeReplay(requestActive: Boolean, loading: Boolean) = !requestActive && loading
 
 fun normalizeReplaySpeed(speed: Int) = speed.takeIf { it in setOf(1, 5, 10) } ?: 1
 

@@ -46,7 +46,7 @@ class RaceViewModel : ViewModel() {
     init { refresh() }
 
     fun refresh() {
-        refreshJob?.cancel()
+        if (refreshJob?.isActive == true) return
         refreshJob = viewModelScope.launch {
             if (state.frame.target.sessionId.isBlank()) state = state.copy(loading = true, message = null)
             val api = RaceApi(origin)
@@ -134,7 +134,7 @@ class RaceViewModel : ViewModel() {
         if (state.frame.target.mode == WatchMode.LIVE) startLiveStream()
         else if (
             state.frame.target.sessionId.isNotBlank() &&
-            shouldResumeReplay(replayJob?.isActive == true, state.loading, state.frame.snapshot)
+            shouldResumeReplay(replayJob?.isActive == true, state.loading)
         ) loadReplay(state.frame.target)
     }
 
@@ -183,11 +183,11 @@ class RaceViewModel : ViewModel() {
             try {
                 val api = RaceApi(origin)
                 val requestedAt = (target.replayMs ?: 0).coerceAtLeast(0)
-                val timelineRequest = if (knownTimeline == null) async(Dispatchers.IO) { api.timeline(target.sessionId) } else null
-                val snapshotRequest = if (knownTimeline == null) async(Dispatchers.IO) { api.replayState(target.sessionId, requestedAt) } else null
-                val timeline = knownTimeline ?: requireNotNull(timelineRequest).await()
+                val timelineRequest = if (knownTimeline == null) async(Dispatchers.IO) { runCatching { api.timeline(target.sessionId) } } else null
+                val snapshotRequest = if (knownTimeline == null) async(Dispatchers.IO) { runCatching { api.replayState(target.sessionId, requestedAt) } } else null
+                val timeline = knownTimeline ?: requireNotNull(timelineRequest).await().getOrThrow()
                 val atMs = requestedAt.coerceIn(timeline.startMs.coerceAtLeast(0), timeline.endMs)
-                var snapshot = if (snapshotRequest != null && atMs == requestedAt) snapshotRequest.await()
+                var snapshot = if (snapshotRequest != null && atMs == requestedAt) snapshotRequest.await().getOrThrow()
                 else withContext(Dispatchers.IO) { api.replayState(target.sessionId, atMs) }
                 val resolvedAt = resolvedReplayStart(atMs, timeline, snapshot.drivers.isNotEmpty())
                 if (resolvedAt != atMs) snapshot = withContext(Dispatchers.IO) { api.replayState(target.sessionId, resolvedAt) }
