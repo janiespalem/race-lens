@@ -8,7 +8,7 @@ function fmtFeedTime(ms: number, clockOriginMs?: number): string {
   return ms < clockOriginMs ? 'FORMATION' : formatRaceTime(ms - clockOriginMs)
 }
 
-type Tag = 'PIT' | 'FLAG' | 'FASTEST' | 'FINISH' | 'PASS' | 'INFO'
+type Tag = 'PIT' | 'FLAG' | 'FASTEST' | 'FINISH' | 'PASS' | 'INFO' | 'STEWARDS'
 
 const TAG_LABELS: Record<Tag, string> = {
   FLAG: 'FLAG',
@@ -17,6 +17,7 @@ const TAG_LABELS: Record<Tag, string> = {
   FINISH: 'FIN',
   PASS: 'PASS',
   INFO: 'INFO',
+  STEWARDS: 'FIA',
 }
 
 // One shared <audio> element: only ever one team-radio clip plays at a time.

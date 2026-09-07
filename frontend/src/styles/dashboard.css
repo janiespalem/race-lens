@@ -342,6 +342,7 @@
 .ev-tag-info  { background: #ffffff11; color: var(--dim); }
 .ev-tag-finish { background: #ffffff1c; color: #fff; }
 .ev-tag-pass  { background: #00d2be33; color: #00d2be; }
+.ev-tag-stewards { background: #ff7a0033; color: #ff9a3d; }
 
 /* whisper transcript under a radio feed row */
 .ev-transcript {

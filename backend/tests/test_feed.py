@@ -113,7 +113,7 @@ def test_feed_no_position_changed_or_gap_noise():
 
 def test_feed_tag_all_items_have_tag():
     feed = render_feed(mini_race(), until_ms=300_000)
-    valid_tags = {"PIT", "FLAG", "FASTEST", "FINISH", "INFO"}
+    valid_tags = {"PIT", "FLAG", "FASTEST", "FINISH", "INFO", "PASS", "STEWARDS"}
     for item in feed:
         assert "tag" in item, f"Missing tag on item: {item}"
         assert item["tag"] in valid_tags, f"Unknown tag {item['tag']!r} on item: {item}"
@@ -183,3 +183,49 @@ def test_red_flag_feed_keeps_incident_visible_and_reports_stopped_driver():
     assert not any(item["kind"] == "PitIn" for item in feed)
     assert any("INCIDENT" in item["text"] for item in feed)
     assert any(item["driver_id"] == "LEC" and "stopped" in item["text"] for item in feed)
+
+
+def test_feed_keeps_official_steward_penalty_and_reason():
+    message = (
+        "FIA STEWARDS: 5 SECOND TIME PENALTY FOR CAR 11 (PER) - "
+        "FAILING TO FOLLOW RACE DIRECTORS INSTRUCTIONS – ESCAPE ROAD INSTRUCTIONS"
+    )
+    events = [
+        event(
+            "race",
+            "RaceControlMessage",
+            1_000,
+            lap=30,
+            category="Other",
+            message=message,
+        ),
+    ]
+
+    feed = render_feed(events, until_ms=1_000)
+
+    assert [(item["tag"], item["text"]) for item in feed] == [
+        ("STEWARDS", message),
+    ]
+
+
+def test_feed_labels_official_investigation_update_as_stewards():
+    message = (
+        "FIA STEWARDS: INCIDENT INVOLVING CAR 63 (RUS) NO FURTHER ACTION - "
+        "YELLOW FLAG INFRINGEMENT"
+    )
+    events = [
+        event(
+            "race",
+            "RaceControlMessage",
+            1_000,
+            lap=40,
+            category="Other",
+            message=message,
+        ),
+    ]
+
+    feed = render_feed(events, until_ms=1_000)
+
+    assert [(item["tag"], item["text"]) for item in feed] == [
+        ("STEWARDS", message),
+    ]
