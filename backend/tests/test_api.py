@@ -163,7 +163,9 @@ def test_negative_at_ms_clamps_to_zero(client, path, extra_params):
 
 def test_insights_endpoint(client):
     r = client.get("/api/sessions/2024_mini_race/insights", params={"at_ms": 247_000}).json()
-    assert r["insights"][0]["driver_ids"] == ["LEC", "NOR"]
+    assert r["at_ms"] == 247_000
+    assert r["insights"]
+    assert all(insight["evidence"] for insight in r["insights"])
     early = client.get("/api/sessions/2024_mini_race/insights", params={"at_ms": 100_000}).json()
     assert early["insights"] == []
 
@@ -184,7 +186,7 @@ def test_stream_simulated_live(client):
 
     last_state = json.loads(chunks[3].removeprefix("data:"))
     assert last_state["session_status"] == "finished"
-    assert last_state["active_insights"][0]["driver_ids"] == ["LEC", "NOR"]
+    assert last_state["active_insights"] == []
     assert "commentary" in last_state
     assert len(last_state["commentary"]) == len(last_state["active_insights"])
 

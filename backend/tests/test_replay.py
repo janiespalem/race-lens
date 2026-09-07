@@ -73,6 +73,38 @@ def test_pit_out_resets_recent_stint_pace():
     assert after["drivers"]["LEC"]["recent_laps_ms"] == []
 
 
+def test_race_restart_discards_laps_recorded_during_red_flag():
+    events = [
+        event(SID, "SessionStarted", 0),
+        event(SID, "LapCompleted", 80_000, "VER", lap=1, lap_time_ms=80_000),
+        event(SID, "SessionStatusChanged", 90_000, status="red_flag"),
+        event(SID, "LapCompleted", 1_900_000, "VER", lap=2, lap_time_ms=1_820_000),
+        event(SID, "SessionStatusChanged", 1_910_000, status="formation"),
+        event(SID, "SessionStatusChanged", 1_920_000, status="started"),
+    ]
+
+    state = ReplayEngine(events).state_at(1_920_000)
+
+    assert state["drivers"]["VER"]["recent_laps_ms"] == []
+
+
+def test_recent_pace_ignores_restart_lap_far_slower_than_best():
+    events = [
+        event(SID, "SessionStarted", 0),
+        event(SID, "LapCompleted", 80_000, "VER", lap=1, lap_time_ms=80_000),
+        event(SID, "SessionStatusChanged", 90_000, status="red_flag"),
+        event(SID, "SessionStatusChanged", 1_900_000, status="formation"),
+        event(SID, "SessionStatusChanged", 1_950_000, status="started"),
+        event(SID, "LapCompleted", 2_150_000, "VER", lap=2, lap_time_ms=2_070_000),
+    ]
+
+    state = ReplayEngine(events).state_at(2_150_000)
+
+    assert state["drivers"]["VER"]["last_lap_ms"] == 2_070_000
+    assert state["drivers"]["VER"]["best_lap_ms"] == 80_000
+    assert state["drivers"]["VER"]["recent_laps_ms"] == []
+
+
 def test_classified_leader_gap_is_always_zero():
     events = [
         event(SID, "SessionStarted", 0, total_laps=1),

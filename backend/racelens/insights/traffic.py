@@ -9,6 +9,7 @@ import itertools
 from typing import Any
 
 from racelens.insights._base import mk_insight
+from racelens.replay.engine import RECENT_LAPS_WINDOW
 
 INTERVAL_THRESHOLD_S = 1.0   # within striking distance
 PACE_DELTA_MEDIUM_MS = 200   # behind car is at least this much faster per lap
@@ -27,14 +28,19 @@ def detect_traffic_risk(state: dict[str, Any]) -> list[dict[str, Any]]:
         ahead, behind = drivers[ahead_id], drivers[behind_id]
         if ahead.get("retired") or behind.get("retired"):
             continue
+        if any(
+            len(driver.get("recent_laps_ms", [])) < RECENT_LAPS_WINDOW
+            for driver in (ahead, behind)
+        ):
+            continue
         interval = behind["interval_s"]
         if interval is None or interval > INTERVAL_THRESHOLD_S:
             continue
-        if behind["last_lap_ms"] is None or ahead["last_lap_ms"] is None:
-            continue
         if behind["in_pit"] or ahead["in_pit"]:
             continue
-        pace_delta_ms = ahead["last_lap_ms"] - behind["last_lap_ms"]
+        ahead_lap_ms = ahead["recent_laps_ms"][-1]
+        behind_lap_ms = behind["recent_laps_ms"][-1]
+        pace_delta_ms = ahead_lap_ms - behind_lap_ms
         if pace_delta_ms < PACE_DELTA_MEDIUM_MS:
             continue
 
@@ -48,8 +54,8 @@ def detect_traffic_risk(state: dict[str, Any]) -> list[dict[str, Any]]:
             evidence={
                 "interval_s": interval,
                 "pace_delta_ms": pace_delta_ms,
-                "behind_last_lap_ms": behind["last_lap_ms"],
-                "ahead_last_lap_ms": ahead["last_lap_ms"],
+                "behind_last_lap_ms": behind_lap_ms,
+                "ahead_last_lap_ms": ahead_lap_ms,
             },
             state=state,
         ))

@@ -12,6 +12,11 @@ UNDERCUT = {
     "evidence": {"interval_s": 2.4, "attacker_tyre_age_laps": 18,
                  "defender_tyre_age_laps": 20, "pace_delta_ms": 100},
 }
+BATTLE = {
+    "insight_id": "battle:NOR:VER:1", "type": "BATTLE_DETECTED",
+    "severity": "medium", "lap": 20, "driver_ids": ["NOR", "VER"],
+    "evidence": {"interval_s": 0.7, "positions": [1, 2]},
+}
 
 
 def test_en_pro_uses_evidence_numbers():
@@ -28,6 +33,11 @@ def test_ru_beginner_explains_without_jargon():
 def test_undercut_names_attacker_and_defender():
     text = render(UNDERCUT, "ru", "pro")
     assert "VER" in text and "NOR" in text and "2.4" in text
+
+
+def test_model_label_distinguishes_strategy_projection_from_observed_battle():
+    assert render(UNDERCUT, "en", "pro").startswith("MODEL · ")
+    assert not render(BATTLE, "en", "pro").startswith("MODEL · ")
 
 
 def test_unknown_lang_falls_back_to_en_pro():

@@ -7,6 +7,8 @@ from tests.test_replay import mini_race
 
 def test_traffic_risk_detected_at_finish():
     state = ReplayEngine(mini_race()).state_at(247_000)
+    state["drivers"]["LEC"]["recent_laps_ms"] = [77_200, 77_100, 77_000]
+    state["drivers"]["NOR"]["recent_laps_ms"] = [80_000, 79_900, 79_800]
     found = detect_traffic_risk(state)
     assert len(found) == 1
     ins = found[0]
@@ -18,6 +20,32 @@ def test_traffic_risk_detected_at_finish():
 
 def test_no_traffic_risk_without_interval_data():
     state = ReplayEngine(mini_race()).state_at(140_000)
+    assert detect_traffic_risk(state) == []
+
+
+def test_traffic_risk_waits_for_three_clean_laps():
+    state = {
+        "at_ms": 2_000_000,
+        "lap": 5,
+        "classification": ["NOR", "LEC"],
+        "drivers": {
+            "NOR": {
+                "interval_s": None,
+                "last_lap_ms": 82_000,
+                "recent_laps_ms": [1_900_000],
+                "in_pit": False,
+                "retired": False,
+            },
+            "LEC": {
+                "interval_s": 0.7,
+                "last_lap_ms": 79_000,
+                "recent_laps_ms": [79_000],
+                "in_pit": False,
+                "retired": False,
+            },
+        },
+    }
+
     assert detect_traffic_risk(state) == []
 
 

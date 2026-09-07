@@ -11,6 +11,7 @@ import itertools
 from typing import Any
 
 from racelens.insights._base import mk_insight
+from racelens.replay.engine import RECENT_LAPS_WINDOW
 
 STRIKE_RANGE_S = 3.5      # within this, a good outlap usually closes the gap
 HIGH_RISK_RANGE_S = 1.0
@@ -30,6 +31,11 @@ def detect_undercut_risk(state: dict[str, Any]) -> list[dict[str, Any]]:
         ahead, behind = drivers[ahead_id], drivers[behind_id]
         if ahead.get("retired") or behind.get("retired"):
             continue
+        if any(
+            len(driver.get("recent_laps_ms", [])) < RECENT_LAPS_WINDOW
+            for driver in (ahead, behind)
+        ):
+            continue
         interval = behind["interval_s"]
         if interval is None or interval > STRIKE_RANGE_S:
             continue
@@ -37,9 +43,9 @@ def detect_undercut_risk(state: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if (behind["tyre_age_laps"] or 0) < MIN_TYRE_AGE_LAPS:
             continue
-        if behind["last_lap_ms"] is None or ahead["last_lap_ms"] is None:
-            continue
-        if behind["last_lap_ms"] - ahead["last_lap_ms"] > MAX_PACE_DEFICIT_MS:
+        ahead_lap_ms = ahead["recent_laps_ms"][-1]
+        behind_lap_ms = behind["recent_laps_ms"][-1]
+        if behind_lap_ms - ahead_lap_ms > MAX_PACE_DEFICIT_MS:
             continue
 
         severity = "high" if interval <= HIGH_RISK_RANGE_S else "medium"
@@ -53,7 +59,7 @@ def detect_undercut_risk(state: dict[str, Any]) -> list[dict[str, Any]]:
                 "interval_s": interval,
                 "attacker_tyre_age_laps": behind["tyre_age_laps"],
                 "defender_tyre_age_laps": ahead["tyre_age_laps"],
-                "pace_delta_ms": ahead["last_lap_ms"] - behind["last_lap_ms"],
+                "pace_delta_ms": ahead_lap_ms - behind_lap_ms,
             },
             state=state,
         ))
