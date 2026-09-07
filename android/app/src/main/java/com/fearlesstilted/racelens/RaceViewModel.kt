@@ -48,19 +48,24 @@ class RaceViewModel : ViewModel() {
     fun refresh() {
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
-            state = state.copy(loading = state.frame.target.sessionId.isBlank(), message = null)
+            if (state.frame.target.sessionId.isBlank()) state = state.copy(loading = true, message = null)
             val api = RaceApi(origin)
             val sessions = async(Dispatchers.IO) { runCatching { api.sessions() } }
             val live = async(Dispatchers.IO) { runCatching { api.liveStatus() } }
-            val loadedSessions = sessions.await()
-            state = state.copy(sessions = loadedSessions.getOrElse { state.sessions })
-            if (state.frame.target.sessionId.isBlank()) {
-                recommendedReplayId(state.sessions)?.let(::chooseReplay) ?: run {
-                    state = state.copy(loading = false, message = loadedSessions.exceptionOrNull()?.let { "Replay catalog unavailable" })
+            launch {
+                val loadedSessions = sessions.await()
+                state = state.copy(sessions = loadedSessions.getOrElse { state.sessions })
+                if (state.frame.target.sessionId.isBlank()) {
+                    recommendedReplayId(state.sessions)?.let(::chooseReplay) ?: run {
+                        state = state.copy(loading = false, message = loadedSessions.exceptionOrNull()?.let { "Replay catalog unavailable" })
+                    }
                 }
             }
-            state = state.copy(live = live.await().getOrElse { LiveAvailability(false, "Live status unavailable", null) })
-            if (foreground && state.frame.target.mode == WatchMode.LIVE && state.live.available) startLiveStream()
+            launch {
+                val loadedLive = live.await()
+                state = state.copy(live = loadedLive.getOrElse { LiveAvailability(false, "Live status unavailable", null) })
+                if (foreground && state.frame.target.mode == WatchMode.LIVE && state.live.available) startLiveStream()
+            }
         }
     }
 
@@ -127,7 +132,10 @@ class RaceViewModel : ViewModel() {
         foreground = true
         if (refreshJob?.isActive != true) refresh()
         if (state.frame.target.mode == WatchMode.LIVE) startLiveStream()
-        else if (state.frame.target.sessionId.isNotBlank() && shouldResumeReplay(state.loading, state.frame.snapshot)) loadReplay(state.frame.target)
+        else if (
+            state.frame.target.sessionId.isNotBlank() &&
+            shouldResumeReplay(replayJob?.isActive == true, state.loading, state.frame.snapshot)
+        ) loadReplay(state.frame.target)
     }
 
     fun onBackground() {
@@ -174,9 +182,13 @@ class RaceViewModel : ViewModel() {
         replayJob = viewModelScope.launch {
             try {
                 val api = RaceApi(origin)
-                val timeline = knownTimeline ?: withContext(Dispatchers.IO) { api.timeline(target.sessionId) }
-                val atMs = (target.replayMs ?: 0).coerceIn(timeline.startMs.coerceAtLeast(0), timeline.endMs)
-                var snapshot = withContext(Dispatchers.IO) { api.replayState(target.sessionId, atMs) }
+                val requestedAt = (target.replayMs ?: 0).coerceAtLeast(0)
+                val timelineRequest = if (knownTimeline == null) async(Dispatchers.IO) { api.timeline(target.sessionId) } else null
+                val snapshotRequest = if (knownTimeline == null) async(Dispatchers.IO) { api.replayState(target.sessionId, requestedAt) } else null
+                val timeline = knownTimeline ?: requireNotNull(timelineRequest).await()
+                val atMs = requestedAt.coerceIn(timeline.startMs.coerceAtLeast(0), timeline.endMs)
+                var snapshot = if (snapshotRequest != null && atMs == requestedAt) snapshotRequest.await()
+                else withContext(Dispatchers.IO) { api.replayState(target.sessionId, atMs) }
                 val resolvedAt = resolvedReplayStart(atMs, timeline, snapshot.drivers.isNotEmpty())
                 if (resolvedAt != atMs) snapshot = withContext(Dispatchers.IO) { api.replayState(target.sessionId, resolvedAt) }
                 if (acceptsReplayCompletion(generation, replayGeneration, target, state.frame.target)) {
