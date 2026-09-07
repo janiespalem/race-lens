@@ -664,6 +664,7 @@ function App() {
         desk={desk}
         customEditing={customEditing}
         onModeChange={handleModeSwitch}
+        onLang={replay.setLang}
         onLevel={replay.setLevel}
         onVoice={setVoice}
         onDeskChange={handleDeskChange}

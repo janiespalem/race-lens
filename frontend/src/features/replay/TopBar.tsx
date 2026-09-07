@@ -21,6 +21,7 @@ type Props = {
   desk: DeskMode
   customEditing: boolean
   onModeChange: (mode: AppMode) => void
+  onLang: (lang: Lang) => void
   onLevel: (level: Level) => void
   onProjection: (on: boolean) => void
   onVoice: (on: boolean) => void
@@ -38,7 +39,7 @@ type Props = {
   companion?: ReactNode
 }
 
-export function TopBar({ sessionId, lap, totalLaps, lang, level, mode, liveAvailable, liveNowAvailable, projection, voice, desk, customEditing, onModeChange, onLevel, onProjection, onVoice, onDeskChange, onEditCustom, onSeek, onSettingsOpen, onCatalogOpen, sessionStatus, atMs, anchoredHighlights = true, anchoredDotd = true, sessionName, companion }: Props) {
+export function TopBar({ sessionId, lap, totalLaps, lang, level, mode, liveAvailable, liveNowAvailable, projection, voice, desk, customEditing, onModeChange, onLang, onLevel, onProjection, onVoice, onDeskChange, onEditCustom, onSeek, onSettingsOpen, onCatalogOpen, sessionStatus, atMs, anchoredHighlights = true, anchoredDotd = true, sessionName, companion }: Props) {
   const current = sessionId ? sessionMeta(sessionId) : null
   const sessionTriggerLabel = current?.year
     ? `${current.year} · ${current.event} · ${sessionTypeLabel(current.type)}`
@@ -156,6 +157,18 @@ export function TopBar({ sessionId, lap, totalLaps, lang, level, mode, liveAvail
               </div>
             </>
           )}
+        </div>
+        <div className="tog-group tog-group--secondary" aria-label="Language">
+          <button
+            type="button"
+            className={`tog${lang === 'en' ? ' tog-on' : ''}`}
+            onClick={() => onLang('en')}
+          >EN</button>
+          <button
+            type="button"
+            className={`tog${lang === 'ru' ? ' tog-on' : ''}`}
+            onClick={() => onLang('ru')}
+          >RU</button>
         </div>
       </div>
 
