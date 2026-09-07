@@ -113,7 +113,7 @@ def test_config_publishes_every_session_type_by_default(tmp_path, monkeypatch):
     )
 
 
-def test_capture_then_processing_retry_never_recaptures(tmp_path, monkeypatch):
+def test_processing_retry_keeps_live_finishing_and_never_recaptures(tmp_path, monkeypatch):
     clock = [datetime(2026, 7, 19, 12, 55, tzinfo=UTC)]
     session = ScheduledSession(2026, 13, "Belgian Grand Prix", "R", clock[0])
     recorder = Recorder(_config(tmp_path), now=lambda: clock[0])
@@ -122,7 +122,13 @@ def test_capture_then_processing_retry_never_recaptures(tmp_path, monkeypatch):
     )
     captures = []
     processes = []
+    live_statuses = []
     monkeypatch.setattr(recorder, "capture", lambda item: captures.append(item.session_id))
+    monkeypatch.setattr(
+        recorder,
+        "_set_live_status",
+        lambda _session, status, **_kwargs: live_statuses.append(status),
+    )
 
     def process(item):
         processes.append(item.session_id)
@@ -141,6 +147,7 @@ def test_capture_then_processing_retry_never_recaptures(tmp_path, monkeypatch):
     assert recorder.run_once().startswith("complete:")
     assert captures == [session.session_id]
     assert processes == [session.session_id, session.session_id]
+    assert live_statuses == []
 
 
 def test_due_capture_precedes_older_captured_archive(tmp_path, monkeypatch):

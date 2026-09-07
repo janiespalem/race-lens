@@ -926,6 +926,53 @@ def test_live_race_control_resumes_only_on_track_clear(
     ] == messages
 
 
+def test_red_flag_restart_exposes_repeat_formation_laps(tmp_path):
+    lines = _feed_prefix() + [
+        _line(
+            "RaceControlMessages",
+            {"Messages": [{"Utc": "2026-08-23T13:01:00Z", "Category": "Flag",
+                           "Message": "RED FLAG"}]},
+            "2026-08-23T13:01:00Z",
+        ),
+        _line("SessionStatus", {"Status": "Started"}, "2026-08-23T13:20:00Z"),
+        _line(
+            "RaceControlMessages",
+            {"Messages": [{"Utc": "2026-08-23T13:21:00Z", "Category": "Other",
+                           "Message": "STANDING START"}]},
+            "2026-08-23T13:21:00Z",
+        ),
+        _line(
+            "RaceControlMessages",
+            {"Messages": [{"Utc": "2026-08-23T13:22:00Z", "Category": "Other",
+                           "Message": "EXTRA FORMATION LAP"}]},
+            "2026-08-23T13:22:00Z",
+        ),
+        _line(
+            "RaceControlMessages",
+            {"Messages": [{"Utc": "2026-08-23T13:23:00Z", "Category": "Other",
+                           "Message": "STANDING START"}]},
+            "2026-08-23T13:23:00Z",
+        ),
+    ]
+    feed = tmp_path / "restart-formation.txt"
+    _write_feed(feed, lines)
+
+    statuses = [
+        (item.session_time_ms, item.payload["status"])
+        for item in ingest_f1live(str(feed), session_id="test")
+        if item.type == "SessionStatusChanged"
+    ]
+
+    assert statuses == [
+        (0, "started"),
+        (60_000, "red_flag"),
+        (1_200_000, "formation"),
+        (1_260_000, "started"),
+        (1_320_000, "formation"),
+        (1_380_000, "started"),
+    ]
+
+
 def test_complete_live_weekend_lifecycle_smoke(tmp_path, monkeypatch):
     """One deterministic race covers the browser Live contract end to end."""
     import racelens.api as api
@@ -979,7 +1026,7 @@ def test_complete_live_weekend_lifecycle_smoke(tmp_path, monkeypatch):
     lines = [
         _line("SessionInfo", json.dumps(session_info)),
         _line("DriverList", {"1": {"Tla": "VER"}, "4": {"Tla": "NOR"}}),
-        _line("LapCount", {"CurrentLap": 0, "TotalLaps": 4}, "2026-08-23T12:59:00Z"),
+        _line("LapCount", {"CurrentLap": 0, "TotalLaps": 4}, "2026-08-23T12:50:00Z"),
         _line("TimingAppData", {"Lines": {
             "1": {"Stints": [{"Compound": "MEDIUM", "TotalLaps": 0}]},
             "4": {"Stints": [{"Compound": "SOFT", "TotalLaps": 0}]},
@@ -997,6 +1044,13 @@ def test_complete_live_weekend_lifecycle_smoke(tmp_path, monkeypatch):
     assert not any(item["kind"] == "SessionStarted" for item in snapshot["feed"]["en"])
     assert snapshot["stints"] == {"session_id": fixture_stem(SESSION), "total_laps": 4, "stints": {}}
     assert store.objects["live/current.json"]["track_replay_session_id"] == practice_replay
+
+    formation_at_ms = snapshot["race_state"]["at_ms"]
+    clock[0] += timedelta(seconds=45)
+    assert recorder._publish_live_snapshot(SESSION, raw)
+    quiet_formation = store.objects[f"live/{SESSION.session_id}/snapshot.json"]
+    assert quiet_formation["race_state"]["session_status"] == "formation"
+    assert quiet_formation["race_state"]["at_ms"] >= formation_at_ms + 45_000
 
     lines.extend([
         _line("SessionData", {"StatusSeries": [{
@@ -1026,6 +1080,7 @@ def test_complete_live_weekend_lifecycle_smoke(tmp_path, monkeypatch):
     assert recorder._publish_live_snapshot(SESSION, raw)
     red = copy.deepcopy(store.objects[f"live/{SESSION.session_id}/snapshot.json"])
     assert red["race_state"]["session_status"] == "red_flag"
+    assert red["race_state"]["at_ms"] == 100_000
     assert red["race_state"]["restart_at_ms"] == 180_000
     assert red["stints"]["stints"]["VER"][0]["compound"] == "Medium"
     assert any("RACE WILL RESUME" in item["text"] for item in red["feed"]["en"])
@@ -1043,6 +1098,10 @@ def test_complete_live_weekend_lifecycle_smoke(tmp_path, monkeypatch):
             "4": {"InPit": False, "Position": "2"},
         }}, "2026-08-23T13:02:25Z"),
         _line("SessionStatus", {"Status": "Started"}, "2026-08-23T13:02:30Z"),
+        _line("RaceControlMessages", {"Messages": [{
+            "Utc": "2026-08-23T13:02:30.500Z", "Category": "Other",
+            "Message": "STANDING START",
+        }]}, "2026-08-23T13:02:30.500Z"),
         _line("TimingData", {"Lines": {
             "1": {"Position": "2"}, "4": {"Position": "1"},
         }}, "2026-08-23T13:02:31Z"),

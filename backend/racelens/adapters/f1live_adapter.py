@@ -245,10 +245,13 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
     def to_ms(posix: float) -> int:
         return max(0, round((posix - t0) * 1000))
 
-    join_ms = next(
-        (to_ms(ts) for _, _, raw_ts in rows if (ts := _parse_iso(raw_ts)) is not None),
-        None,
-    )
+    row_times: list[float | None] = [None] * len(rows)
+    next_time: float | None = None
+    for index in range(len(rows) - 1, -1, -1):
+        parsed = _parse_iso(rows[index][2])
+        if parsed is not None:
+            next_time = parsed
+        row_times[index] = next_time
 
     # Session badge text ("SILVERSTONE · RACE"): SessionInfo is a keyframe
     # (full history resent on every re-parse), so the first occurrence in the
@@ -307,7 +310,7 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
             if isinstance(info, dict) and info.get("Tla"):
                 num_to_abbr[str(num)] = str(info["Tla"])
 
-    def apply_timing(lines: dict, t_ms: int) -> None:
+    def apply_timing(lines: dict, t_ms: int, *, emit_activity: bool) -> None:
         for num, patch in lines.items():
             if not isinstance(patch, dict):
                 continue
@@ -340,8 +343,9 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
             n = patch.get("NumberOfLaps")
             if isinstance(n, int) and n > laps.get(d, 0):
                 laps[d] = n
-                events.append(event(sid, "LapCompleted", t_ms, d, lap=n,
-                                    lap_time_ms=last_lap_ms.get(d)))
+                if emit_activity:
+                    events.append(event(sid, "LapCompleted", t_ms, d, lap=n,
+                                        lap_time_ms=last_lap_ms.get(d)))
 
             if "InPit" in patch:
                 now_in = bool(patch["InPit"])
@@ -349,13 +353,13 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
                 if was_in is None or now_in != was_in:
                     in_pit[d] = now_in
                     cur_lap = laps.get(d, 0) + 1  # NumberOfLaps = completed
-                    if now_in:
+                    if emit_activity and now_in:
                         events.append(event(sid, "PitIn", t_ms, d, lap=cur_lap))
-                    elif was_in:  # only a real out after a seen in
+                    elif emit_activity and was_in:  # only a real out after a seen in
                         events.append(event(sid, "PitOut", t_ms, d, lap=cur_lap))
 
             if "Retired" in patch:
-                if patch["Retired"]:
+                if emit_activity and patch["Retired"]:
                     retirement_candidates.setdefault(d, (t_ms, laps.get(d, 0) + 1))
                 else:
                     retirement_candidates.pop(d, None)
@@ -364,7 +368,7 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
                 now_stopped = bool(patch["Stopped"])
                 was_stopped = stopped.get(d)
                 stopped[d] = now_stopped
-                if now_stopped or was_stopped is not None:
+                if emit_activity and (now_stopped or was_stopped is not None):
                     if was_stopped != now_stopped:
                         events.append(event(
                             sid, "DriverStoppedChanged", t_ms, d, stopped=now_stopped,
@@ -410,16 +414,17 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
 
     # Pass 2: chronological event emission.
     latest_ms = 0
-    for cat, payload, ts in rows:
+    for index, (cat, payload, ts) in enumerate(rows):
         t_posix = _parse_iso(ts)
-        if t_posix is None:
+        effective_posix = t_posix if t_posix is not None else row_times[index]
+        if effective_posix is None:
             # Keyframe (no timestamp): baseline snapshot. Anchor it at the join
-            # moment if known, else at 0 — live views read state_at(latest), so
-            # increments supersede it either way.
-            t_ms = join_ms if join_ms is not None else 0
+            # moment if known, else at 0.
+            t_ms = 0
         else:
-            t_ms = to_ms(t_posix)
+            t_ms = to_ms(effective_posix)
         latest_ms = max(latest_ms, t_ms)
+        emit_activity = has_started and effective_posix is not None and effective_posix > t0
 
         if cat == "SessionInfo":
             path = payload.get("Path")
@@ -428,11 +433,13 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
         elif cat == "SessionStatus":
             status = _STATUS_MAP.get(str(payload.get("Status")))
             if status:
+                if status == "started" and last_status == "red_flag":
+                    status = "formation"
                 emit_status(status, t_ms)
         elif cat == "TimingData":
             lines = payload.get("Lines")
             if isinstance(lines, dict):
-                apply_timing(lines, t_ms)
+                apply_timing(lines, t_ms, emit_activity=emit_activity)
         elif cat == "TimingAppData":
             lines = payload.get("Lines")
             if isinstance(lines, dict):
@@ -449,6 +456,8 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
                 text = str(m["Message"])
                 lap_no = m.get("Lap") if isinstance(m.get("Lap"), int) else None
                 message_posix = _parse_iso(str(m.get("Utc") or ""))
+                if not has_started or message_posix is None or message_posix < t0:
+                    continue
                 message_ms = to_ms(message_posix) if message_posix is not None else t_ms
                 race_control_payload: dict[str, Any] = {
                     "category": str(m.get("Category", "")),
@@ -464,9 +473,21 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
                     lap=lap_no,
                     **race_control_payload,
                 ))
-                status = message_to_status(text)
-                if status == "started":
-                    status = None
+                text_upper = text.upper()
+                if "EXTRA FORMATION LAP" in text_upper:
+                    status = "formation"
+                elif (
+                    last_status == "formation"
+                    and any(
+                        start in text_upper
+                        for start in ("STANDING START", "ROLLING START")
+                    )
+                ):
+                    status = "started"
+                else:
+                    status = message_to_status(text)
+                    if status == "started":
+                        status = None
                 if "TRACK CLEAR" in text.upper() and last_status in {"safety_car", "vsc"}:
                     status = "started"
                 if status is not None:
@@ -481,6 +502,8 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
                 # is the join time, not the clip time; each capture carries its
                 # own UTC timestamp and must be placed on the replay with that.
                 radio_posix = _parse_iso(str(c.get("Utc") or ""))
+                if not has_started or radio_posix is None or radio_posix < t0:
+                    continue
                 radio_ms = to_ms(radio_posix) if radio_posix is not None else t_ms
                 d = drv(str(c.get("RacingNumber", "")))
                 radio_payload: dict[str, Any] = {

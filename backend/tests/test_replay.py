@@ -213,19 +213,20 @@ def test_status_since_ms():
     assert s_late["status_since_ms"] == 250_000
 
 
-def test_red_flag_replay_recovers_when_source_omits_restart_status():
-    events = [
-        event(SID, "SessionStarted", 0, total_laps=3),
-        event(SID, "LapCompleted", 80_000, "VER", lap=1, lap_time_ms=80_000),
-        event(SID, "SessionStatusChanged", 90_000, status="red_flag"),
-        event(SID, "LapCompleted", 200_000, "VER", lap=2, lap_time_ms=80_000),
-    ]
-    engine = ReplayEngine(events)
+def test_halted_replay_recovers_when_source_omits_restart_status():
+    for halted in ("red_flag", "formation"):
+        events = [
+            event(SID, "SessionStarted", 0, total_laps=3),
+            event(SID, "LapCompleted", 80_000, "VER", lap=1, lap_time_ms=80_000),
+            event(SID, "SessionStatusChanged", 90_000, status=halted),
+            event(SID, "LapCompleted", 200_000, "VER", lap=2, lap_time_ms=80_000),
+        ]
+        engine = ReplayEngine(events)
 
-    assert engine.state_at(150_000)["session_status"] == "red_flag"
-    resumed = engine.state_at(200_000)
-    assert resumed["session_status"] == "started"
-    assert resumed["status_since_ms"] == 200_000
+        assert engine.state_at(150_000)["session_status"] == halted
+        resumed = engine.state_at(200_000)
+        assert resumed["session_status"] == "started"
+        assert resumed["status_since_ms"] == 200_000
 
 
 def test_restart_time_survives_red_flag_and_clears_on_restart():

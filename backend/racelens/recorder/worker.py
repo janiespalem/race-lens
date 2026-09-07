@@ -311,8 +311,18 @@ class Recorder:
             return False
         engine = ReplayEngine(events)
         at_ms = engine.events[-1].session_time_ms
+        source_state = engine.state_at(at_ms)
+        prior_state = (
+            prior_snapshot.get("race_state") if isinstance(prior_snapshot, dict) else None
+        )
+        left_formation = (
+            isinstance(prior_state, dict)
+            and prior_state.get("session_status") == "formation"
+            and source_state["session_status"] != "formation"
+        )
         if (
-            isinstance(prior_snapshot, dict)
+            not left_formation
+            and isinstance(prior_snapshot, dict)
             and prior_snapshot.get("canonical_session_id") == session.session_id
             and prior_snapshot.get("replay_session_id") == replay_id
             and isinstance(prior_snapshot.get("race_state"), dict)
@@ -326,7 +336,11 @@ class Recorder:
                 prior_snapshot["race_state"]["at_ms"]
                 + max(0, round((current - generated).total_seconds() * 1000)),
             )
-        state = engine.state_at(at_ms)
+        state = (
+            source_state
+            if at_ms == engine.events[-1].session_time_ms
+            else engine.state_at(at_ms)
+        )
         for driver in state["drivers"].values():
             driver.setdefault("x", None)
             driver.setdefault("y", None)
@@ -461,17 +475,6 @@ class Recorder:
             failure=failure,
             now=self.now(),
         )
-
-    def _fail_live_archive(self, session: ScheduledSession) -> None:
-        try:
-            self._set_live_status(
-                session, "failed", failure="Archive preparation failed",
-            )
-        except (LiveRecordError, StorageError) as exc:
-            logger.warning(
-                "failed to mark live archive failed for %s: %s",
-                session.session_id, type(exc).__name__,
-            )
 
     def _finish_live(self, session: ScheduledSession) -> None:
         """Move a live pointer to ``finishing`` once capture ends.
@@ -938,7 +941,6 @@ class Recorder:
                 self.store.transition(
                     session_id, Phase.FAILED, self.now(), error=str(exc), retry_at=retry,
                 )
-                self._fail_live_archive(session)
                 return f"processing failed: {session_id}: {exc}"
             self.store.transition(session_id, Phase.COMPLETE, self.now())
             return f"complete: {session_id}"

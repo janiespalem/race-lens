@@ -208,6 +208,43 @@ def test_keyframe_is_anchored_to_first_live_timestamp(tmp_path):
     assert tyre.session_time_ms == 300_000
 
 
+def test_midrace_timing_keyframe_restores_current_driver_state(tmp_path):
+    lines = [
+        "['SessionData', {\"StatusSeries\": [{\"SessionStatus\": \"Started\", "
+        "\"Utc\": \"2026-07-05T15:00:00.000Z\"}]}, '']",
+        "['DriverList', {'44': {'Tla': 'HAM'}}, '']",
+        "['TimingData', {'Lines': {'44': {'Position': '7', 'NumberOfLaps': 12, "
+        "'InPit': True, 'Stopped': True}}}, '']",
+        "['Heartbeat', {'Utc': '2026-07-05T15:05:00.000Z'}, "
+        "'2026-07-05T15:05:00.000Z']",
+    ]
+    feed = tmp_path / "midrace-keyframe.txt"
+    feed.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    state = ReplayEngine(ingest_f1live(str(feed), session_id="test")).state_at(300_000)
+
+    assert state["lap"] == 12
+    assert state["drivers"]["HAM"]["laps_completed"] == 12
+    assert state["drivers"]["HAM"]["in_pit"] is True
+    assert state["drivers"]["HAM"]["stopped"] is True
+
+
+def test_prestart_keyframe_immediately_before_start_is_not_race_activity(tmp_path):
+    feed = tmp_path / "prestart-keyframe.txt"
+    feed.write_text("\n".join([
+        "['DriverList', {'44': {'Tla': 'HAM'}}, '']",
+        "['TimingData', {'Lines': {'44': {'Position': '1', 'NumberOfLaps': 3, "
+        "'InPit': True, 'Stopped': True}}}, '']",
+        "['SessionStatus', {'Status': 'Started'}, '2026-07-05T15:00:00.000Z']",
+    ]) + "\n", encoding="utf-8")
+
+    events = ingest_f1live(str(feed), session_id="test")
+
+    assert not any(item.type in {
+        "LapCompleted", "PitIn", "PitOut", "DriverStoppedChanged",
+    } for item in events)
+
+
 def test_race_control_keyframe_uses_each_message_timestamp(tmp_path):
     lines = [
         "['SessionData', {\"StatusSeries\": [{\"SessionStatus\": \"Started\", "
@@ -230,6 +267,37 @@ def test_race_control_keyframe_uses_each_message_timestamp(tmp_path):
     assert [(event.session_time_ms, event.payload["message"]) for event in messages] == [
         (60_000, "FIRST"),
         (120_000, "SECOND"),
+    ]
+
+
+def test_prestart_activity_does_not_leak_into_live_feed(tmp_path):
+    before_start = [
+        "['DriverList', {'16': {'Tla': 'LEC'}}, '']",
+        "['TimingData', {'Lines': {'16': {'InPit': True}}}, "
+        "'2026-09-06T12:30:00Z']",
+        "['RaceControlMessages', {'Messages': [{'Utc': '2026-09-06T12:40:00Z', "
+        "'Category': 'Other', 'Message': 'PRESTART INCIDENT'}]}, "
+        "'2026-09-06T12:40:00Z']",
+        "['TeamRadio', {'Captures': [{'Utc': '2026-09-06T12:50:00Z', "
+        "'RacingNumber': '16', 'Path': 'TeamRadio/prestart.mp3'}]}, "
+        "'2026-09-06T12:50:00Z']",
+    ]
+    feed = tmp_path / "race.txt"
+    feed.write_text("\n".join(before_start) + "\n", encoding="utf-8")
+
+    assert render_feed(ingest_f1live(str(feed)), until_ms=10_000_000) == []
+
+    feed.write_text("\n".join(before_start + [
+        "['SessionStatus', {'Status': 'Started'}, '2026-09-06T13:00:00Z']",
+        "['RaceControlMessages', {'Messages': [{'Utc': '2026-09-06T13:01:00Z', "
+        "'Category': 'Other', 'Message': 'RACE INCIDENT'}]}, "
+        "'2026-09-06T13:01:00Z']",
+    ]) + "\n", encoding="utf-8")
+
+    items = render_feed(ingest_f1live(str(feed)), until_ms=10_000_000)
+    assert [item["text"] for item in items] == [
+        "RACE INCIDENT",
+        "Lights out — race start!",
     ]
 
 
