@@ -17,6 +17,15 @@ import sys
 from pathlib import Path
 
 
+def _progress_telemetry(lap):
+    # Same distance/interpolation pipeline as FastF1 3.8.3 get_telemetry(),
+    # without its unused all-driver DriverAhead calculation on every lap.
+    position = lap.get_pos_data(pad=1, pad_side="both")
+    car = lap.get_car_data(pad=1, pad_side="both")
+    car = car.add_distance().add_relative_distance()
+    return position.merge_channels(car).slice_by_lap(lap, interpolate_edges=True)
+
+
 def compute_progress(year: int, gp: str, session: str, session_id: str) -> dict[str, list]:
     """Return {driver_abbr: [progress|null, ...]} aligned to the positions.json grid."""
     import fastf1
@@ -68,7 +77,7 @@ def compute_progress(year: int, gp: str, session: str, session_id: str) -> dict[
         for _, lap in ses.laps.pick_drivers(drv).iterlaps():
             lap_no = int(lap["LapNumber"])
             try:
-                tel = lap.get_telemetry()
+                tel = _progress_telemetry(lap)
             except Exception:
                 continue
             if tel is None or len(tel) < 2 or "RelativeDistance" not in tel.columns:
