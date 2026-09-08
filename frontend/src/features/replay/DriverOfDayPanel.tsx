@@ -94,8 +94,8 @@ export function DriverOfDayPanel({ sessionId, lang = 'en', sessionStatus, lap, t
       {open && (
         <div className="dotd-panel">
           <div className="dotd-header">
-            <span className="dotd-title">DRIVER OF THE DAY</span>
-            <span className="dotd-sub">official fan vote · your pick · Race Lens</span>
+            <span className="dotd-title">{lang === 'ru' ? 'ГОНЩИК ДНЯ' : 'DRIVER OF THE DAY'}</span>
+            <span className="dotd-sub">{lang === 'ru' ? 'официальное голосование · ваш выбор · Race Lens' : 'official fan vote · your pick · Race Lens'}</span>
           </div>
           <div className="dotd-footer" style={{ borderTop: 0, paddingTop: 0 }}>
             {lang === 'ru'
@@ -110,8 +110,8 @@ export function DriverOfDayPanel({ sessionId, lang = 'en', sessionStatus, lap, t
             </div>
           )}
 
-          {loading && <div className="dotd-empty">Loading…</div>}
-          {!loading && !data && <div className="dotd-empty">No data</div>}
+          {loading && <div className="dotd-empty">{lang === 'ru' ? 'Загрузка…' : 'Loading…'}</div>}
+          {!loading && !data && <div className="dotd-empty">{lang === 'ru' ? 'Нет данных' : 'No data'}</div>}
 
           {data && (
             <>
@@ -120,8 +120,8 @@ export function DriverOfDayPanel({ sessionId, lang = 'en', sessionStatus, lap, t
                   if (kind === 'official-pending') {
                     return (
                       <div className="dotd-result dotd-result-pending" key={kind}>
-                        <span className="dotd-hero-label">OFFICIAL FAN VOTE</span>
-                        <span className="dotd-hero-note">Official result pending</span>
+                        <span className="dotd-hero-label">{lang === 'ru' ? 'ОФИЦИАЛЬНЫЙ ВЫБОР БОЛЕЛЬЩИКОВ' : 'OFFICIAL FAN VOTE'}</span>
+                        <span className="dotd-hero-note">{lang === 'ru' ? 'Ожидается официальный результат' : 'Official result pending'}</span>
                       </div>
                     )
                   }
@@ -135,14 +135,16 @@ export function DriverOfDayPanel({ sessionId, lang = 'en', sessionStatus, lap, t
                       <span className="dotd-hero-code" style={{ color: teamColor(driver) }}>{driver}</span>
                       <span className="dotd-hero-label">
                         {kind === 'official'
-                          ? 'OFFICIAL FAN VOTE'
+                          ? (lang === 'ru' ? 'ОФИЦИАЛЬНЫЙ ВЫБОР БОЛЕЛЬЩИКОВ' : 'OFFICIAL FAN VOTE')
                           : kind === 'user'
-                            ? 'YOUR PICK'
-                            : isFinished ? 'RACE LENS PICK' : 'PROVISIONAL RACE LENS PICK'}
+                            ? (lang === 'ru' ? 'ВАШ ВЫБОР' : 'YOUR PICK')
+                            : isFinished
+                              ? (lang === 'ru' ? 'ВЫБОР RACE LENS' : 'RACE LENS PICK')
+                              : (lang === 'ru' ? 'ПРЕДВАРИТЕЛЬНЫЙ ВЫБОР RACE LENS' : 'PROVISIONAL RACE LENS PICK')}
                       </span>
                       {kind === 'official' && data.official_result && (
                         <a href={data.official_result.source_url} target="_blank" rel="noreferrer" className="dotd-hero-note">
-                          {data.official_result.percentage.toFixed(0)}% · {data.official_result.provider}
+                          {data.official_result.percentage.toFixed(0)}% · {lang === 'ru' ? 'голосование болельщиков Formula 1' : data.official_result.provider}
                         </a>
                       )}
                       {kind === 'race-lens' && candidate && (
@@ -174,14 +176,14 @@ export function DriverOfDayPanel({ sessionId, lang = 'en', sessionStatus, lap, t
                         <div className="dotd-bar" style={{ width: `${barPct}%`, background: color }} />
                       </div>
                       <span className="dotd-score">{c.score.toFixed(1)}</span>
-                      {isUserVote && <span className="dotd-check">✓ YOUR PICK</span>}
+                      {isUserVote && <span className="dotd-check">{lang === 'ru' ? '✓ ВАШ ВЫБОР' : '✓ YOUR PICK'}</span>}
                     </button>
                   )
                 })}
               </div>
 
               <div className="dotd-footer">
-                your pick is saved locally · Race Lens pick is algorithmic
+                {lang === 'ru' ? 'ваш выбор сохранён на устройстве · выбор Race Lens рассчитан алгоритмом' : 'your pick is saved locally · Race Lens pick is algorithmic'}
               </div>
             </>
           )}

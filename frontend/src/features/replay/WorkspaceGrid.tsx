@@ -1,3 +1,4 @@
+import type { Lang } from './replayTypes'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactGridLayout, { useContainerWidth, verticalCompactor } from 'react-grid-layout'
 import type { KeyboardEvent, ReactNode } from 'react'
@@ -18,6 +19,7 @@ import type {
 } from './workspace'
 
 type Props = {
+  lang?: Lang
   mode: WorkspaceMode
   workspace: WorkspaceLayout
   editing: boolean
@@ -27,6 +29,12 @@ type Props = {
   onCancel: () => void
   onReset: () => void
 }
+
+const widgetLabel = (id: WidgetId, lang: Lang): string => lang === 'ru' ? {
+  timing: 'Хронометраж', battles: 'Борьба', track: 'Трасса', insights: 'Аналитика',
+  feed: 'Лента гонки', strategy: 'Стратегия', pace: 'Прогноз темпа',
+  highlights: 'Моменты', dotd: 'Пилот дня',
+}[id] : WIDGET_REGISTRY[id].label
 
 const sameGridItem = (a: WorkspaceWidget, b: LayoutItem) => (
   a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h
@@ -44,12 +52,14 @@ const gridItem = (item: WorkspaceWidget): LayoutItem => ({
 
 function WorkspaceFrame({
   id,
+  lang,
   editing,
   onHide,
   onKeyDown,
   children,
 }: {
   id: WidgetId
+  lang: Lang
   editing: boolean
   onHide: () => void
   onKeyDown: (event: KeyboardEvent<HTMLElement>) => void
@@ -68,25 +78,26 @@ function WorkspaceFrame({
   }, [])
 
   const definition = WIDGET_REGISTRY[id]
+  const label = widgetLabel(id, lang)
   const density = selectDensity(size.width, size.height, definition.densities, 'auto')
 
   return (
-    <section ref={frame} className={`workspace-widget workspace-widget--${id}`} data-density={density} aria-label={`${definition.label} widget`}>
+    <section ref={frame} className={`workspace-widget workspace-widget--${id}`} data-density={density} aria-label={lang === 'ru' ? `Виджет: ${label}` : `${label} widget`}>
       {editing && (
         <header
           className="workspace-widget-header workspace-drag-handle"
           tabIndex={0}
           onKeyDown={onKeyDown}
-          aria-label={`${definition.label}. Arrow keys move; Shift plus arrow keys resize.`}
+          aria-label={lang === 'ru' ? `${label}. Стрелки перемещают; Shift со стрелками меняет размер.` : `${label}. Arrow keys move; Shift plus arrow keys resize.`}
         >
           <span className="workspace-grip" aria-hidden="true">⠿</span>
-          <strong>{definition.label}</strong>
+          <strong>{label}</strong>
           <button
             type="button"
             className="workspace-widget-hide workspace-control"
             onClick={onHide}
-            aria-label={`Hide ${definition.label}`}
-            title={`Hide ${definition.label}`}
+            aria-label={`${lang === 'ru' ? 'Скрыть' : 'Hide'} ${label}`}
+            title={`${lang === 'ru' ? 'Скрыть' : 'Hide'} ${label}`}
           >×</button>
         </header>
       )}
@@ -95,7 +106,7 @@ function WorkspaceFrame({
   )
 }
 
-export function WorkspaceGrid({ mode, workspace, editing, widgets, onChange, onDone, onCancel, onReset }: Props) {
+export function WorkspaceGrid({ lang = 'en', mode, workspace, editing, widgets, onChange, onDone, onCancel, onReset }: Props) {
   const { width, containerRef, mounted } = useContainerWidth({ initialWidth: 1600 })
   const visibleIds = useMemo(() => WIDGET_IDS.filter((id) => (
     workspace.widgets[id].visible
@@ -146,20 +157,20 @@ export function WorkspaceGrid({ mode, workspace, editing, widgets, onChange, onD
   return (
     <div ref={containerRef} className={`workspace-grid-wrap${editing ? ' is-editing' : ' is-locked'}`}>
       {editing && (
-        <div className="workspace-editbar" role="toolbar" aria-label="Custom desk editor">
-          <strong>EDIT CUSTOM</strong>
-          {hiddenIds.length > 0 && <span>RESTORE</span>}
+        <div className="workspace-editbar" role="toolbar" aria-label={(lang === 'ru' ? 'Редактор раскладки' : 'Custom desk editor')}>
+          <strong>{(lang === 'ru' ? 'НАСТРОЙКА РАСКЛАДКИ' : 'EDIT CUSTOM')}</strong>
+          {hiddenIds.length > 0 && <span>{(lang === 'ru' ? 'ВОССТАНОВИТЬ' : 'RESTORE')}</span>}
           {hiddenIds.map((id) => (
             <button
               type="button"
               className="b"
               key={id}
               onClick={() => onChange(updateWorkspaceWidget(workspace, mode, id, { visible: true }))}
-            >{WIDGET_REGISTRY[id].label.toUpperCase()}</button>
+            >{widgetLabel(id, lang).toUpperCase()}</button>
           ))}
-          <button type="button" className="b workspace-edit-reset" onClick={onReset}>RESET</button>
-          <button type="button" className="b" onClick={onCancel}>CANCEL</button>
-          <button type="button" className="b primary" onClick={onDone}>DONE</button>
+          <button type="button" className="b workspace-edit-reset" onClick={onReset}>{(lang === 'ru' ? 'СБРОСИТЬ' : 'RESET')}</button>
+          <button type="button" className="b" onClick={onCancel}>{(lang === 'ru' ? 'ОТМЕНА' : 'CANCEL')}</button>
+          <button type="button" className="b primary" onClick={onDone}>{(lang === 'ru' ? 'ГОТОВО' : 'DONE')}</button>
         </div>
       )}
       {mounted && (
@@ -177,6 +188,7 @@ export function WorkspaceGrid({ mode, workspace, editing, widgets, onChange, onD
             <div key={id}>
               <WorkspaceFrame
                 id={id}
+                lang={lang}
                 editing={editing}
                 onHide={() => onChange(updateWorkspaceWidget(workspace, mode, id, { visible: false }))}
                 onKeyDown={(event) => handleKeyboard(id, event)}

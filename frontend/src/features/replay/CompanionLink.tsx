@@ -1,8 +1,9 @@
+import type { Lang } from './replayTypes'
 import { useEffect, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { encodePocketAppLink, encodePocketLink, type PocketTarget } from '../../api/pocket'
 
-export function CompanionLink({ target }: { target: PocketTarget | null }) {
+export function CompanionLink({ target, lang = 'en' }: { target: PocketTarget | null; lang?: Lang }) {
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
   const [handoff, setHandoff] = useState<PocketTarget | null>(null)
@@ -38,20 +39,20 @@ export function CompanionLink({ target }: { target: PocketTarget | null }) {
     <div className="companion-link">
       <button ref={trigger} type="button" className="companion-trigger" onClick={() => { setHandoff(target); setCopied(null); setOpen(true) }} aria-haspopup="dialog" aria-expanded={open}>
         <span className="companion-dot is-linked" aria-hidden="true" />
-        <span>OPEN IN POCKET</span>
+        <span>{(lang === 'ru' ? 'ОТКРЫТЬ В POCKET' : 'OPEN IN POCKET')}</span>
       </button>
       {open && <div className="companion-overlay">
-        <button type="button" className="companion-backdrop" onClick={() => setOpen(false)} aria-label="Close Pocket handoff" />
+        <button type="button" className="companion-backdrop" onClick={() => setOpen(false)} aria-label={(lang === 'ru' ? 'Закрыть передачу в Pocket' : 'Close Pocket handoff')} />
         <section ref={dialog} className="companion-panel" role="dialog" aria-modal="true" aria-labelledby="pocket-title">
           <header className="companion-header">
-            <div><small>RACE LENS POCKET</small><h2 id="pocket-title">Open independently</h2></div>
-            <button type="button" className="settings-close" onClick={() => { setOpen(false); setHandoff(null) }} aria-label="Close">×</button>
+            <div><small>RACE LENS POCKET</small><h2 id="pocket-title">{(lang === 'ru' ? 'Открыть отдельно' : 'Open independently')}</h2></div>
+            <button type="button" className="settings-close" onClick={() => { setOpen(false); setHandoff(null) }} aria-label={(lang === 'ru' ? 'Закрыть' : 'Close')}>×</button>
           </header>
           <div className="companion-share">
-            <div className="companion-qr"><QRCodeSVG value={appLink} size={184} level="M" title="Race Lens Pocket app handoff QR code" /></div>
-            <p>Scan with installed Pocket to hand off this session and focus. Pocket fetches timing directly; actions there do not change this dashboard.</p>
-            <button type="button" className="b companion-primary" onClick={() => void copy()}>COPY BROWSER LINK</button>
-            {copied && <small role="status">{copied}</small>}
+            <div className="companion-qr"><QRCodeSVG value={appLink} size={184} level="M" title={(lang === 'ru' ? 'QR-код для открытия в Race Lens Pocket' : 'Race Lens Pocket app handoff QR code')} /></div>
+            <p>{(lang === 'ru' ? 'Сканируйте код в установленном Pocket, чтобы открыть эту сессию с выбранными пилотами. Pocket получает хронометраж напрямую; действия в нём не меняют эту панель.' : 'Scan with installed Pocket to hand off this session and focus. Pocket fetches timing directly; actions there do not change this dashboard.')}</p>
+            <button type="button" className="b companion-primary" onClick={() => void copy()}>{(lang === 'ru' ? 'КОПИРОВАТЬ ССЫЛКУ ДЛЯ БРАУЗЕРА' : 'COPY BROWSER LINK')}</button>
+            {copied && <small role="status">{lang === 'ru' ? (copied === 'LINK COPIED' ? 'ССЫЛКА СКОПИРОВАНА' : 'НЕ УДАЛОСЬ СКОПИРОВАТЬ') : copied}</small>}
           </div>
         </section>
       </div>}

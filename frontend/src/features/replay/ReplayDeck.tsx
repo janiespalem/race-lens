@@ -1,3 +1,4 @@
+import type { Lang } from './replayTypes'
 import { useMemo, type CSSProperties } from 'react'
 import type { RaceMarker, Timeline } from '../../api/types'
 import { formatRaceTime, lapAtTime } from '../../lib/format'
@@ -7,6 +8,7 @@ type Speed = 1 | 5 | 10
 const SPEEDS: Speed[] = [1, 5, 10]
 
 type Props = {
+  lang?: Lang
   timeline: Timeline | null
   atMs: number
   playing: boolean
@@ -65,7 +67,7 @@ function buildPhase(markers: RaceMarker[], startMs: number, endMs: number): Phas
   return segments.length > 0 ? segments : [{ kind: 'green', pct: 100 }]
 }
 
-export function ReplayDeck({ timeline, atMs, playing, speed, markers = [], canScrub = true, liveLabel, livePhase = 'connecting', liveBadge = 'CONNECTING', liveDetail = 'OPENING LIVE TIMING', onScrub, onPlay, onPause, onSpeed }: Props) {
+export function ReplayDeck({ lang = 'en', timeline, atMs, playing, speed, markers = [], canScrub = true, liveLabel, livePhase = 'connecting', liveBadge = lang === 'ru' ? 'ПОДКЛЮЧЕНИЕ' : 'CONNECTING', liveDetail = lang === 'ru' ? 'ПОДКЛЮЧЕНИЕ К ХРОНОМЕТРАЖУ' : 'OPENING LIVE TIMING', onScrub, onPlay, onPause, onSpeed }: Props) {
 
   const startMs = timeline?.start_ms ?? 0
   const endMs = timeline?.end_ms ?? 0
@@ -83,10 +85,10 @@ export function ReplayDeck({ timeline, atMs, playing, speed, markers = [], canSc
   const lightsOutMs = timeline?.lights_out_ms ?? 0
   const inFormation = atMs < lightsOutMs
   const positionLabel = !timeline
-    ? 'REPLAY POSITION'
+    ? (lang === 'ru' ? 'ПОЗИЦИЯ ПОВТОРА' : 'REPLAY POSITION')
     : inFormation
-      ? 'FORMATION LAP'
-      : `LAP ${lapAtTime(timeline, atMs)} · ${formatRaceTime(atMs - lightsOutMs)}`
+      ? (lang === 'ru' ? 'ПРОГРЕВОЧНЫЙ КРУГ' : 'FORMATION LAP')
+      : `${lang === 'ru' ? 'КРУГ' : 'LAP'} ${lapAtTime(timeline, atMs)} · ${formatRaceTime(atMs - lightsOutMs)}`
   const visiblePhases = useMemo(() => {
     const result: { kind: PhaseKind; pct: number; key: string; neutral: boolean; label?: string }[] = []
     let accumulated = 0
@@ -117,7 +119,7 @@ export function ReplayDeck({ timeline, atMs, playing, speed, markers = [], canSc
             type="button"
             onClick={playing ? onPause : onPlay}
             disabled={!timeline}
-            aria-label={playing ? 'Pause replay' : 'Play replay'}
+            aria-label={lang === 'ru' ? (playing ? 'Приостановить повтор' : 'Воспроизвести повтор') : (playing ? 'Pause replay' : 'Play replay')}
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               {playing
@@ -162,13 +164,13 @@ export function ReplayDeck({ timeline, atMs, playing, speed, markers = [], canSc
               style={{ '--deck-progress': `${cursorPct}%` } as CSSProperties}
               onChange={(event) => onScrub(Number(event.currentTarget.value))}
               disabled={!timeline}
-              aria-label="Replay position"
+              aria-label={(lang === 'ru' ? 'Позиция повтора' : 'Replay position')}
               aria-valuetext={positionLabel}
             />
           </div>
 
           <div className="deck-options">
-            <div className="deck-speeds" role="group" aria-label="Replay speed">
+            <div className="deck-speeds" role="group" aria-label={lang === 'ru' ? 'Скорость повтора' : 'Replay speed'}>
               {SPEEDS.map((s) => (
                 <button
                   key={s}
@@ -187,7 +189,7 @@ export function ReplayDeck({ timeline, atMs, playing, speed, markers = [], canSc
         <div className="deck-live-state" role="status">
           <span className={`live-badge live-badge--${livePhase}`}>{liveBadge}</span>
           <strong>{liveLabel ?? liveDetail}</strong>
-          <small>{liveLabel ? liveDetail : 'PLAY-FORWARD · NO REPLAY SCRUB'}</small>
+          <small>{liveLabel ? liveDetail : (lang === 'ru' ? 'ВОСПРОИЗВЕДЕНИЕ ВПЕРЁД · БЕЗ ПЕРЕМОТКИ' : 'PLAY-FORWARD · NO REPLAY SCRUB')}</small>
         </div>
       )}
     </div>

@@ -5,7 +5,10 @@ import { focusDriverIds } from '../../lib/insightFocus'
 import { evidenceData } from '../../lib/insightPresentation'
 import { NEUTRAL_STATUSES, writePersisted } from './replayTypes'
 
+type Lang = 'en' | 'ru'
+
 type Props = {
+  lang?: Lang
   insights: Insight[]
   commentary: CommentaryItem[]
   selectedIds?: string[]
@@ -37,6 +40,16 @@ const TYPE_LABELS: Array<[string, string]> = [
   ['BATTLE_DETECTED', 'BATTLE'],
 ]
 
+const LABELS_RU: Record<string, string> = {
+  TRAFFIC: 'ТРАФИК', 'DRS TRAIN': 'DRS-ПОЕЗД', 'PIT WINDOW': 'ПИТ-ОКНО',
+  UNDERCUT: 'АНДЕРКАТ', 'TYRE DEG': 'ИЗНОС ШИН', 'CLEAN AIR': 'ЧИСТЫЙ ВОЗДУХ',
+  BATTLE: 'БОРЬБА', 'SC PIT WINDOW': 'ПИТ-ОКНО ПРИ SC',
+}
+
+function localizedLabel(label: string, lang: Lang): string {
+  return lang === 'ru' ? (LABELS_RU[label] ?? 'АНАЛИТИКА') : label
+}
+
 function baseLabel(type: string): string {
   const hit = TYPE_LABELS.find(([prefix]) => type.startsWith(prefix))
   return hit ? hit[1] : type.replace(/_/g, ' ')
@@ -59,13 +72,13 @@ function isHiddenType(type: string, hidden: Set<string>): boolean {
   return TYPE_LABELS.some(([prefix]) => type.startsWith(prefix) && hidden.has(prefix))
 }
 
-function insightTitle(insight: Insight): string {
-  return insight.driver_ids.join(' ← ') || baseLabel(insight.type)
+function insightTitle(insight: Insight, lang: Lang): string {
+  return insight.driver_ids.join(' ← ') || localizedLabel(baseLabel(insight.type), lang)
 }
 
-function insightSubtitle(insight: Insight): string {
-  const label = baseLabel(insight.type)
-  return insight.severity === 'high' ? `${label} · HIGH` : label
+function insightSubtitle(insight: Insight, lang: Lang): string {
+  const label = localizedLabel(baseLabel(insight.type), lang)
+  return insight.severity === 'high' ? `${label} · ${lang === 'ru' ? 'ВАЖНО' : 'HIGH'}` : label
 }
 
 const SEVERITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 }
@@ -125,23 +138,26 @@ function groupByPair(insights: Insight[]): {
 /** Grouped SC_PIT_WINDOW card — shown first under neutralization */
 const ScPitWindowCard = React.memo(function ScPitWindowCard({
   drivers,
+  lang,
 }: {
   drivers: string[]
+  lang: Lang
 }) {
   return (
     <div className="ins ins-sc-pit">
       <h4>
-        PIT NOW
-        <small>SC PIT WINDOW</small>
+        {lang === 'ru' ? 'В БОКСЫ СЕЙЧАС' : 'PIT NOW'}
+        <small>{lang === 'ru' ? 'ПИТ-ОКНО ПРИ SC' : 'SC PIT WINDOW'}</small>
       </h4>
       <p>
-        {drivers.join(', ')} — cheap stop under SC
+        {drivers.join(', ')} — {lang === 'ru' ? 'пит-стоп с меньшей потерей времени при SC' : 'cheap stop under SC'}
       </p>
     </div>
   )
 })
 
 const InsightCard = React.memo(function InsightCard({
+  lang,
   ins,
   also,
   text,
@@ -150,6 +166,7 @@ const InsightCard = React.memo(function InsightCard({
   overtakePct,
   onFocusDrivers,
 }: {
+  lang: Lang
   ins: Insight
   also: string[]
   text: string
@@ -158,7 +175,7 @@ const InsightCard = React.memo(function InsightCard({
   overtakePct?: number | null
   onFocusDrivers?: (ids: string[]) => void
 }) {
-  const data = evidenceData(ins)
+  const data = evidenceData(ins, lang)
   const focusIds = focusDriverIds(ins.driver_ids)
   const className = [
     severityClass(ins.severity),
@@ -168,18 +185,18 @@ const InsightCard = React.memo(function InsightCard({
   const content = (
     <>
       <h4>
-        {insightTitle(ins)}
-        <small>{insightSubtitle(ins)}</small>
+        {insightTitle(ins, lang)}
+        <small>{insightSubtitle(ins, lang)}</small>
       </h4>
       {onFocusDrivers && focusIds.length > 0 && (
-        <span className="ins-action-label">FOCUS {focusIds.join(' / ')} →</span>
+        <span className="ins-action-label">{lang === 'ru' ? 'ВЫБРАТЬ' : 'FOCUS'} {focusIds.join(' / ')} →</span>
       )}
       {also.length > 0 && (
-        <div className="ins-also">also: {also.join(' · ')}</div>
+        <div className="ins-also">{lang === 'ru' ? 'также:' : 'also:'} {also.map((label) => localizedLabel(label, lang)).join(' · ')}</div>
       )}
       {text && <p>{text}</p>}
       {overtakePct !== null && overtakePct !== undefined && (
-        <div className="ins-overtake">ATTACK SCORE: {Math.round(overtakePct * 100)}</div>
+        <div className="ins-overtake">{lang === 'ru' ? 'ОЦЕНКА АТАКИ:' : 'ATTACK SCORE:'} {Math.round(overtakePct * 100)}</div>
       )}
       {data.length > 0 && (
         <div className="data">
@@ -220,7 +237,7 @@ function isBattleType(type: string): boolean {
   return type.startsWith('BATTLE') || type.startsWith('TRAFFIC')
 }
 
-export const InsightPanel = React.memo(function InsightPanel({ insights, commentary, selectedIds = [], sessionStatus = '', sessionId, atMs = 0, onFocusDrivers }: Props) {
+export const InsightPanel = React.memo(function InsightPanel({ lang = 'en', insights, commentary, selectedIds = [], sessionStatus = '', sessionId, atMs = 0, onFocusDrivers }: Props) {
   const isNeutral = NEUTRAL_STATUSES.has(sessionStatus)
 
   // User-controlled type filters for the "WHAT TO WATCH" panel — read once on
@@ -464,7 +481,7 @@ export const InsightPanel = React.memo(function InsightPanel({ insights, comment
 
   return (
     <div className="col col-insights">
-      <div className="label">WHAT TO WATCH</div>
+      <div className="label">{lang === 'ru' ? 'ЗА ЧЕМ СЛЕДИТЬ' : 'WHAT TO WATCH'}</div>
       <div className="ins-filter">
         {TYPE_LABELS.map(([prefix, label]) => (
           <button
@@ -472,18 +489,19 @@ export const InsightPanel = React.memo(function InsightPanel({ insights, comment
             type="button"
             className={`tog${hiddenTypes.has(prefix) ? '' : ' tog-on'}`}
             onClick={() => toggleTypeFilter(prefix)}
-            title={`Toggle ${label} insights`}
+            title={lang === 'ru' ? `Показать/скрыть: ${localizedLabel(label, lang)}` : `Toggle ${label} insights`}
           >
-            {label}
+            {localizedLabel(label, lang)}
           </button>
         ))}
       </div>
       {scPitDrivers.length > 0 && (
-        <ScPitWindowCard drivers={scPitDrivers} />
+        <ScPitWindowCard lang={lang} drivers={scPitDrivers} />
       )}
       {displayItems.map(({ key, ins, also, text, leaving, focused, overtakePct }) => (
         <InsightCard
           key={key}
+          lang={lang}
           ins={ins}
           also={also}
           text={text}
@@ -496,9 +514,9 @@ export const InsightPanel = React.memo(function InsightPanel({ insights, comment
       {!hasVisible && displayItems.length === 0 && (
         <div className="ins pace">
           <h4>
-            No active insights
+            {lang === 'ru' ? 'Активной аналитики нет' : 'No active insights'}
           </h4>
-          <p>Waiting for race data…</p>
+          <p>{lang === 'ru' ? 'Ожидание данных гонки…' : 'Waiting for race data…'}</p>
         </div>
       )}
     </div>

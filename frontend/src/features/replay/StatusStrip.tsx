@@ -1,6 +1,8 @@
+import type { Lang } from './replayTypes'
 import { restartCountdown } from '../../lib/liveStatus'
 
 type Props = {
+  lang?: Lang
   status: string
   lap?: number | null
   atMs?: number
@@ -20,6 +22,7 @@ function formatNeutralTimer(atMs: number, startMs: number): string {
 }
 
 export function StatusStrip({
+  lang = 'en',
   status,
   lap = null,
   atMs = 0,
@@ -29,7 +32,7 @@ export function StatusStrip({
   restartAnnouncement = null,
   restartAtMs = null,
 }: Props) {
-  const lapStr = lap != null ? `LAP ${lap}` : ''
+  const lapStr = lap != null ? `${lang === 'ru' ? 'КРУГ' : 'LAP'} ${lap}` : ''
   const timerStr =
     neutralizationStartMs != null
       ? formatNeutralTimer(atMs, neutralizationStartMs)
@@ -39,7 +42,7 @@ export function StatusStrip({
   if (status === 'formation') {
     return (
       <div className="hazard hazard-formation">
-        <span>FORMATION LAP</span>
+        <span>{(lang === 'ru' ? 'ПРОГРЕВОЧНЫЙ КРУГ' : 'FORMATION LAP')}</span>
       </div>
     )
   }
@@ -49,7 +52,7 @@ export function StatusStrip({
   if (greenFlag && (greenFlagText === 'FORMATION LAP' || greenFlagText === 'ON THE GRID')) {
     return (
       <div className="hazard hazard-formation">
-        <span>{greenFlagText}</span>
+        <span>{lang === 'ru' ? ({ 'FORMATION LAP': 'ПРОГРЕВОЧНЫЙ КРУГ', 'ON THE GRID': 'НА СТАРТОВОЙ РЕШЁТКЕ', 'LIGHTS OUT': 'СТАРТ', 'GREEN FLAG · RACING RESUMED': 'ЗЕЛЁНЫЙ ФЛАГ · ГОНКА ВОЗОБНОВЛЕНА' }[greenFlagText] ?? greenFlagText) : greenFlagText}</span>
       </div>
     )
   }
@@ -57,7 +60,7 @@ export function StatusStrip({
   if (greenFlag && status === 'started') {
     return (
       <div className="hazard hazard-green">
-        <span>{greenFlagText}</span>
+        <span>{lang === 'ru' ? ({ 'FORMATION LAP': 'ПРОГРЕВОЧНЫЙ КРУГ', 'ON THE GRID': 'НА СТАРТОВОЙ РЕШЁТКЕ', 'LIGHTS OUT': 'СТАРТ', 'GREEN FLAG · RACING RESUMED': 'ЗЕЛЁНЫЙ ФЛАГ · ГОНКА ВОЗОБНОВЛЕНА' }[greenFlagText] ?? greenFlagText) : greenFlagText}</span>
       </div>
     )
   }
@@ -68,9 +71,9 @@ export function StatusStrip({
     return (
       <div className="hazard hazard-red">
         <span>
-          RED FLAG · SESSION STOPPED · {timerStr}
+          {lang === 'ru' ? 'КРАСНЫЙ ФЛАГ · СЕССИЯ ОСТАНОВЛЕНА' : 'RED FLAG · SESSION STOPPED'} · {timerStr}
           {restartAnnouncement ? ` · ${restartAnnouncement}` : ''}
-          {restartTimer ? ` · RESUME IN ${restartTimer}` : ''}
+          {restartTimer ? ` · ${lang === 'ru' ? 'ВОЗОБНОВЛЕНИЕ ЧЕРЕЗ' : 'RESUME IN'} ${restartTimer}` : ''}
         </span>
       </div>
     )
@@ -79,7 +82,7 @@ export function StatusStrip({
   if (status === 'safety_car') {
     return (
       <div className="hazard hazard-amber">
-        <span>SAFETY CAR{lapStr ? ` · ${lapStr}` : ''} · {timerStr}</span>
+        <span>{lang === 'ru' ? 'МАШИНА БЕЗОПАСНОСТИ' : 'SAFETY CAR'}{lapStr ? ` · ${lapStr}` : ''} · {timerStr}</span>
       </div>
     )
   }
@@ -87,7 +90,7 @@ export function StatusStrip({
   if (status === 'vsc') {
     return (
       <div className="hazard hazard-amber">
-        <span>VIRTUAL SAFETY CAR{lapStr ? ` · ${lapStr}` : ''} · {timerStr}</span>
+        <span>{lang === 'ru' ? 'ВИРТУАЛЬНАЯ МАШИНА БЕЗОПАСНОСТИ' : 'VIRTUAL SAFETY CAR'}{lapStr ? ` · ${lapStr}` : ''} · {timerStr}</span>
       </div>
     )
   }
@@ -95,7 +98,7 @@ export function StatusStrip({
   if (status === 'finished') {
     return (
       <div className="hazard hazard-chequered">
-        <span>CHEQUERED FLAG</span>
+        <span>{(lang === 'ru' ? 'КЛЕТЧАТЫЙ ФЛАГ' : 'CHEQUERED FLAG')}</span>
       </div>
     )
   }

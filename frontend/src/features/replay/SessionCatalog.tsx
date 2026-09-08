@@ -1,10 +1,13 @@
+import { viewerError } from '../../lib/viewerError'
+import type { Lang } from './replayTypes'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getCatalog, getPreparation, prepareSession } from '../../api/client'
 import type { CatalogResponse, CatalogSession, CatalogSessionType } from '../../api/types'
-import { sessionLabel } from '../../lib/format'
+import { sessionLabel, sessionTypeLabel } from '../../lib/format'
 import { recommendedReplay } from '../../lib/recommendedReplay'
 
 type Props = {
+  lang?: Lang
   open: boolean
   landing?: boolean
   initialSeason?: number
@@ -13,12 +16,12 @@ type Props = {
   onOpenReplay: (sessionId: string) => void
 }
 
-const buttonText = (session: CatalogSession) => {
-  if (session.status === 'ready') return 'WATCH'
-  if (session.status === 'queued') return 'QUEUED'
-  if (session.status === 'processing') return 'PROCESSING'
-  if (session.status === 'failed') return 'RETRY'
-  return 'PREPARE'
+const buttonText = (session: CatalogSession, lang: Lang) => {
+  if (session.status === 'ready') return (lang === 'ru' ? 'СМОТРЕТЬ' : 'WATCH')
+  if (session.status === 'queued') return (lang === 'ru' ? 'В ОЧЕРЕДИ' : 'QUEUED')
+  if (session.status === 'processing') return (lang === 'ru' ? 'ОБРАБОТКА' : 'PROCESSING')
+  if (session.status === 'failed') return (lang === 'ru' ? 'ПОВТОРИТЬ' : 'RETRY')
+  return (lang === 'ru' ? 'ПОДГОТОВИТЬ' : 'PREPARE')
 }
 
 const SESSION_TYPES: Array<'ALL' | CatalogSessionType> = [
@@ -26,6 +29,7 @@ const SESSION_TYPES: Array<'ALL' | CatalogSessionType> = [
 ]
 
 export function SessionCatalog({
+  lang = 'en',
   open,
   landing = false,
   initialSeason,
@@ -166,69 +170,69 @@ export function SessionCatalog({
   return (
     <div className={`settings-overlay open catalog-overlay${landing ? ' catalog-landing' : ''}`}>
       {!landing && (
-        <button type="button" className="settings-backdrop catalog-backdrop" onClick={onClose} aria-label="Close race archive" />
+        <button type="button" className="settings-backdrop catalog-backdrop" onClick={onClose} aria-label={(lang === 'ru' ? 'Закрыть архив гонок' : 'Close race archive')} />
       )}
       <section
         ref={panel}
         className="settings-drawer catalog-panel"
         role={landing ? 'main' : 'dialog'}
         aria-modal={landing ? undefined : true}
-        aria-label="Race archive"
+        aria-label={(lang === 'ru' ? 'Архив гонок' : 'Race archive')}
       >
         {landing && (
           <div className="catalog-intro">
-            <span className="catalog-intro-kicker">F1 REPLAY · EXPLAINED</span>
-            <h1>Pause the chaos. See why the race moved.</h1>
-            <p>Replay any moment and understand timing, battles, strategy, radio, and incidents.</p>
+            <span className="catalog-intro-kicker">{(lang === 'ru' ? 'ПОВТОРЫ F1 · С ОБЪЯСНЕНИЯМИ' : 'F1 REPLAY · EXPLAINED')}</span>
+            <h1>{(lang === 'ru' ? 'Остановите гонку. Разберитесь в каждом моменте.' : 'Pause the chaos. See why the race moved.')}</h1>
+            <p>{(lang === 'ru' ? 'Пересматривайте любой момент: хронометраж, борьба, стратегия, радио и инциденты.' : 'Replay any moment and understand timing, battles, strategy, radio, and incidents.')}</p>
             {recommended ? (
               <button
                 type="button"
                 className="catalog-recommended"
                 onClick={() => onOpenReplay(recommended)}
               >
-                <small>RECOMMENDED REPLAY</small>
-                <strong>{sessionLabel(recommended)}</strong>
-                <span>OPEN RACE →</span>
+                <small>{(lang === 'ru' ? 'РЕКОМЕНДУЕМЫЙ ПОВТОР' : 'RECOMMENDED REPLAY')}</small>
+                <strong>{sessionLabel(recommended, lang)}</strong>
+                <span>{(lang === 'ru' ? 'ОТКРЫТЬ ГОНКУ →' : 'OPEN RACE →')}</span>
               </button>
             ) : (
-              <span className="catalog-recommended-loading">Finding the best ready race…</span>
+              <span className="catalog-recommended-loading">{(lang === 'ru' ? 'Ищем готовую гонку…' : 'Finding the best ready race…')}</span>
             )}
-            <div className="catalog-proof" aria-label="Race Lens proof points">
-              <span>DETERMINISTIC REPLAY</span>
-              <span>REAL RECORDER + LIVE PIPELINE</span>
+            <div className="catalog-proof" aria-label={(lang === 'ru' ? 'Возможности Race Lens' : 'Race Lens proof points')}>
+              <span>{(lang === 'ru' ? 'ВОСПРОИЗВОДИМЫЙ ПОВТОР' : 'DETERMINISTIC REPLAY')}</span>
+              <span>{(lang === 'ru' ? 'ЗАПИСЬ И ПРЯМОЙ ЭФИР' : 'REAL RECORDER + LIVE PIPELINE')}</span>
               <span>REACT + FASTAPI + RUST</span>
             </div>
           </div>
         )}
         <header className="settings-drawer-hdr catalog-header">
           <div>
-            <h2>{landing ? 'Or choose from the race archive' : 'Choose any completed session'}</h2>
+            <h2>{lang === 'ru' ? (landing ? 'Или выберите гонку из архива' : 'Выберите завершённую сессию') : (landing ? 'Or choose from the race archive' : 'Choose any completed session')}</h2>
           </div>
           {!landing && (
-            <button autoFocus type="button" className="settings-close" onClick={onClose} aria-label="Close">×</button>
+            <button autoFocus type="button" className="settings-close" onClick={onClose} aria-label={(lang === 'ru' ? 'Закрыть' : 'Close')}>×</button>
           )}
         </header>
         <div className="catalog-toolbar">
-          <label htmlFor="catalog-season">SEASON</label>
+          <label htmlFor="catalog-season">{(lang === 'ru' ? 'СЕЗОН' : 'SEASON')}</label>
           <select id="catalog-season" value={season} onChange={(event) => setSeason(Number(event.target.value))}>
             {(catalog?.seasons ?? [season]).map((item) => <option key={item}>{item}</option>)}
           </select>
-          <label htmlFor="catalog-session-type">TYPE</label>
+          <label htmlFor="catalog-session-type">{(lang === 'ru' ? 'ТИП' : 'TYPE')}</label>
           <select
             id="catalog-session-type"
             value={sessionType}
             onChange={(event) => setSessionType(event.target.value as 'ALL' | CatalogSessionType)}
           >
-            {SESSION_TYPES.map((item) => <option key={item}>{item}</option>)}
+            {SESSION_TYPES.map((item) => <option key={item} value={item}>{item === 'ALL' ? (lang === 'ru' ? 'ВСЕ' : 'ALL') : sessionTypeLabel(item, lang)}</option>)}
           </select>
-          <span>{catalog ? `${events.length} weekends` : 'Loading calendar…'}</span>
+          <span>{catalog ? (lang === 'ru' ? `Этапы: ${events.length}` : `${events.length} weekends`) : (lang === 'ru' ? 'Загрузка календаря…' : 'Loading calendar…')}</span>
         </div>
-        {error && <div className="catalog-error" role="alert" aria-live="polite">{error}</div>}
+        {error && <div className="catalog-error" role="alert" aria-live="polite">{viewerError(error, lang)}</div>}
         <div className="catalog-list" aria-busy={!catalog}>
           {events.map((event) => (
             <article className="catalog-event" key={event.round}>
               <div className="catalog-event-name">
-                <small>ROUND {String(event.round).padStart(2, '0')}</small>
+                <small>{lang === 'ru' ? 'ЭТАП' : 'ROUND'} {String(event.round).padStart(2, '0')}</small>
                 <b>{event.name}</b>
               </div>
               <div className="catalog-sessions">
@@ -244,15 +248,15 @@ export function SessionCatalog({
                     }
                     onClick={() => void choose(session)}
                   >
-                    <span>{session.name}</span>
-                    <small>{busy === session.session_id ? 'QUEUING…' : buttonText(session)}</small>
+                    <span>{sessionTypeLabel(session.type, lang)}</span>
+                    <small>{busy === session.session_id ? (lang === 'ru' ? 'В ОЧЕРЕДЬ…' : 'QUEUING…') : buttonText(session, lang)}</small>
                   </button>
                 ))}
               </div>
             </article>
           ))}
           {catalog && events.length === 0 && (
-            <div className="catalog-empty">No completed supported sessions in this season.</div>
+            <div className="catalog-empty">{(lang === 'ru' ? 'В этом сезоне нет завершённых поддерживаемых сессий.' : 'No completed supported sessions in this season.')}</div>
           )}
         </div>
       </section>

@@ -1,3 +1,4 @@
+import type { Lang } from './replayTypes'
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Battle, DriverState } from '../../api/types'
 import { battlePair } from '../../lib/battles'
@@ -7,6 +8,7 @@ import { teamColor } from './teamColors'
 type DriverRow = { id: string } & DriverState
 
 type Props = {
+  lang?: Lang
   rows: DriverRow[]
   battles: Battle[]
   selectedIds: string[]
@@ -45,6 +47,7 @@ function paceTrend(row: DriverRow): 'up' | 'down' | null {
 }
 
 export const TimingTower = React.memo(function TimingTower({
+  lang = 'en',
   rows,
   battles,
   selectedIds,
@@ -211,33 +214,33 @@ export const TimingTower = React.memo(function TimingTower({
       style={{ '--row-count': rowCount } as React.CSSProperties}
     >
       <div className="label label-row">
-        TIMING
+        {lang === 'ru' ? 'ХРОНОМЕТРАЖ' : 'TIMING'}
         <button
           type="button"
           className={`delta-btn${deltaPeek ? ' on' : ''}`}
-          title="Positions gained/lost since the start"
+          title={(lang === 'ru' ? 'Выиграно и потеряно позиций со старта' : 'Positions gained/lost since the start')}
           onClick={peekDeltas}
-        >▲▼ GAINED/LOST</button>
+        >{(lang === 'ru' ? '▲▼ СМЕНА ПОЗИЦИЙ' : '▲▼ GAINED/LOST')}</button>
       </div>
       {/* Column headers */}
       <div className="trow-hdr">
-        <span>POS</span>
+        <span>{(lang === 'ru' ? 'ПОЗ' : 'POS')}</span>
         <span />
-        <span>DRV</span>
-        <span title="Tyre compound">TYR</span>
-        <span className="col-age" title="Tyre age laps">AGE</span>
-        <span title="Last lap time">{deltaPeek ? '±START' : 'LAST'}</span>
+        <span>{(lang === 'ru' ? 'ПИЛ' : 'DRV')}</span>
+        <span title={(lang === 'ru' ? 'Состав шин' : 'Tyre compound')}>{(lang === 'ru' ? 'Ш.' : 'TYR')}</span>
+        <span className="col-age" title={(lang === 'ru' ? 'Пробег шин в кругах' : 'Tyre age laps')}>{(lang === 'ru' ? 'КР' : 'AGE')}</span>
+        <span title={(lang === 'ru' ? 'Время последнего круга' : 'Last lap time')}>{lang === 'ru' ? (deltaPeek ? '±СТАРТ' : 'КРУГ') : (deltaPeek ? '±START' : 'LAST')}</span>
         <span />
-        <span title="Gap to leader">GAP</span>
-        <span className="col-int" title="Gap to car ahead">INT</span>
-        <span className="col-pit">PIT</span>
+        <span title={(lang === 'ru' ? 'Отставание от лидера' : 'Gap to leader')}>{(lang === 'ru' ? 'ОТСТ' : 'GAP')}</span>
+        <span className="col-int" title={(lang === 'ru' ? 'Интервал до машины впереди' : 'Gap to car ahead')}>{(lang === 'ru' ? 'ИНТ' : 'INT')}</span>
+        <span className="col-pit">{(lang === 'ru' ? 'ПИТ' : 'PIT')}</span>
       </div>
       {rows.map((row) => {
         const isLead = row.position === 1
         const inBattle = battleSet.has(row.id)
         const isRetired = row.retired === true
         const isStopped = !isRetired && row.stopped === true
-        const outLabel = row.retirement_inferred ? 'OUT?' : 'OUT'
+        const outLabel = lang === 'ru' ? (row.retirement_inferred ? 'СХОД?' : 'СХОД') : (row.retirement_inferred ? 'OUT?' : 'OUT')
         const color = teamColor(row.id)
         const isSelected = selectedIds.includes(row.id)
         const posChange = posChanges.get(row.id)
@@ -248,9 +251,9 @@ export const TimingTower = React.memo(function TimingTower({
         const displayGap = row.gap_s
 
         const intDisplay = isRetired
-          ? <span className="gap dim" title={row.retirement_inferred ? 'Inferred from lap deficit' : undefined}>{outLabel}</span>
+          ? <span className="gap dim" title={row.retirement_inferred ? (lang === 'ru' ? 'Предположение по отставанию в кругах' : 'Inferred from lap deficit') : undefined}>{outLabel}</span>
           : isStopped
-            ? <span className="gap dim">STOPPED</span>
+            ? <span className="gap dim">{(lang === 'ru' ? 'СТОИТ' : 'STOPPED')}</span>
           : isLead
             ? <span className="gap dim">—</span>
             : displayInterval !== null && displayInterval !== undefined
@@ -258,9 +261,9 @@ export const TimingTower = React.memo(function TimingTower({
               : <span className="gap dim">—</span>
 
         const gapDisplay = isRetired
-          ? <span className="gap dim" title={row.retirement_inferred ? 'Inferred from lap deficit' : undefined}>{outLabel}</span>
+          ? <span className="gap dim" title={row.retirement_inferred ? (lang === 'ru' ? 'Предположение по отставанию в кругах' : 'Inferred from lap deficit') : undefined}>{outLabel}</span>
           : isStopped
-            ? <span className="gap dim">STOPPED</span>
+            ? <span className="gap dim">{(lang === 'ru' ? 'СТОИТ' : 'STOPPED')}</span>
           : isLead
             ? <span className="gap dim">—</span>
             : <span className={`gap${displayGap === null || displayGap === undefined ? ' dim' : ''}`}>
@@ -270,9 +273,9 @@ export const TimingTower = React.memo(function TimingTower({
         const compound = row.tyre_compound?.charAt(0).toUpperCase() ?? '?'
 
         const trendEl = trend === 'up'
-          ? <span className="pace-trend up" title="vs own recent pace">▲</span>
+          ? <span className="pace-trend up" title={(lang === 'ru' ? 'В сравнении со своим недавним темпом' : 'vs own recent pace')}>▲</span>
           : trend === 'down'
-            ? <span className="pace-trend down" title="vs own recent pace">▼</span>
+            ? <span className="pace-trend down" title={(lang === 'ru' ? 'В сравнении со своим недавним темпом' : 'vs own recent pace')}>▼</span>
             : <span className="pace-trend" />
 
         const deltaBadge = isRetired ? null : gridDeltaBadge(row)
@@ -305,14 +308,14 @@ export const TimingTower = React.memo(function TimingTower({
             role="button"
             tabIndex={0}
             aria-pressed={isSelected}
-            aria-label={`${row.id}, position ${row.position ?? 'unknown'}`}
+            aria-label={`${row.id}, ${lang === 'ru' ? 'позиция' : 'position'} ${row.position ?? (lang === 'ru' ? 'неизвестна' : 'unknown')}`}
             style={{ cursor: 'pointer' }}
           >
             <span className="pos">{isRetired ? '—' : (row.position ?? '—')}</span>
             <span className="tbar" style={{ background: color }} />
             <span className="code">
               {row.id}
-              {row.in_pit && !isRetired && <span className="pit-tag">PIT</span>}
+              {row.in_pit && !isRetired && <span className="pit-tag">{(lang === 'ru' ? 'ПИТ' : 'PIT')}</span>}
             </span>
             <span className={`ty ${compound}`}>
               {isRetired ? '—' : compound}
@@ -323,7 +326,7 @@ export const TimingTower = React.memo(function TimingTower({
             <span className="last-lap last-swap">
               <span className={`swap-layer${deltaPeek ? ' swap-hidden' : ''}`}>
                 {isRetired ? '—' : formatLapTime(row.last_lap_ms)}
-                {hasFastestLap && !isRetired && <span className="fl-dot" title="Fastest lap">●</span>}
+                {hasFastestLap && !isRetired && <span className="fl-dot" title={(lang === 'ru' ? 'Лучший круг' : 'Fastest lap')}>●</span>}
               </span>
               <span
                 className={`swap-layer swap-delta${deltaPeek ? '' : ' swap-hidden'}${deltaBadge ? ` ${deltaBadge.cls}` : ''}`}

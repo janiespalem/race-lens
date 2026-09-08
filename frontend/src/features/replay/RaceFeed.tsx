@@ -3,12 +3,16 @@ import type { FeedItem } from '../../api/types'
 import { formatRaceTime } from '../../lib/format'
 import { isDirectActivation } from './workspace'
 
-function fmtFeedTime(ms: number, clockOriginMs?: number): string {
+type Lang = 'en' | 'ru'
+
+function fmtFeedTime(ms: number, lang: Lang, clockOriginMs?: number): string {
   if (clockOriginMs === undefined) return formatRaceTime(ms)
-  return ms < clockOriginMs ? 'FORMATION' : formatRaceTime(ms - clockOriginMs)
+  return ms < clockOriginMs ? (lang === 'ru' ? 'ПРОГРЕВ' : 'FORMATION') : formatRaceTime(ms - clockOriginMs)
 }
 
 type Tag = 'PIT' | 'FLAG' | 'FASTEST' | 'FINISH' | 'PASS' | 'INFO' | 'STEWARDS'
+
+const TAG_LABELS_RU: Record<Tag, string> = { FLAG: 'ФЛАГ', PIT: 'ПИТ', FASTEST: 'БЫСТР.', FINISH: 'ФИН', PASS: 'ОБГОН', INFO: 'ИНФО', STEWARDS: 'FIA' }
 
 const TAG_LABELS: Record<Tag, string> = {
   FLAG: 'FLAG',
@@ -25,6 +29,7 @@ const radioAudio = typeof Audio !== 'undefined' ? new Audio() : null
 
 const FeedRow = React.memo(function FeedRow({
   item,
+  lang,
   flash,
   playingUrl,
   onToggleRadio,
@@ -32,6 +37,7 @@ const FeedRow = React.memo(function FeedRow({
   clockOriginMs,
 }: {
   item: FeedItem
+  lang: Lang
   flash: boolean
   playingUrl: string | null
   onToggleRadio: (url: string) => void
@@ -55,27 +61,27 @@ const FeedRow = React.memo(function FeedRow({
         <button
           type="button"
           className="ev-row-action"
-          aria-label={`Open feed event: ${item.text}`}
+          aria-label={lang === 'ru' ? `Открыть событие: ${item.text}` : `Open feed event: ${item.text}`}
           onClick={(event) => {
             if (isDirectActivation(event.currentTarget, event.target)) onActivate(item)
           }}
         />
       )}
       {item.lap !== null ? (
-        <span className="ev-lap">L{item.lap}</span>
+        <span className="ev-lap">{lang === 'ru' ? 'К' : 'L'}{item.lap}</span>
       ) : (
         <span className="ev-lap" />
       )}
-      <span className="t">{fmtFeedTime(item.at_ms, clockOriginMs)}</span>
+      <span className="t">{fmtFeedTime(item.at_ms, lang, clockOriginMs)}</span>
       <span className="x">
-        <span className={`ev-tag ev-tag-${tag.toLowerCase()}`}>{TAG_LABELS[tag]}</span>
+        <span className={`ev-tag ev-tag-${tag.toLowerCase()}`}>{(lang === 'ru' ? TAG_LABELS_RU : TAG_LABELS)[tag]}</span>
         {item.audio_url && (
           <button
             type="button"
             className={`ev-radio-btn${isPlaying ? ' playing' : ''}`}
             onClick={() => onToggleRadio(item.audio_url!)}
-            aria-label={isPlaying ? 'Stop team radio' : 'Play team radio'}
-            title={isPlaying ? 'Stop team radio' : 'Play team radio'}
+            aria-label={lang === 'ru' ? (isPlaying ? 'Остановить радио команды' : 'Включить радио команды') : (isPlaying ? 'Stop team radio' : 'Play team radio')}
+            title={lang === 'ru' ? (isPlaying ? 'Остановить радио команды' : 'Включить радио команды') : (isPlaying ? 'Stop team radio' : 'Play team radio')}
           >
             {isPlaying ? '■' : '▶'}
           </button>
@@ -83,7 +89,7 @@ const FeedRow = React.memo(function FeedRow({
         {item.text}
         {item.transcript && (
           <span className="ev-transcript">
-            <small>AUTO TRANSCRIPT · MAY BE INACCURATE</small>
+            <small>{lang === 'ru' ? 'АВТОРАСШИФРОВКА · ВОЗМОЖНЫ ОШИБКИ' : 'AUTO TRANSCRIPT · MAY BE INACCURATE'}</small>
             “{item.transcript.replace(/([.!?])\s+/g, '$1\n')}”
           </span>
         )}
@@ -98,12 +104,14 @@ function itemKey(item: FeedItem): string {
 
 export function RaceFeed({
   items,
+  lang = 'en',
   loading = false,
   clockOriginMs,
   onActivate,
   isActionable,
 }: {
   items: FeedItem[]
+  lang?: Lang
   loading?: boolean
   clockOriginMs?: number
   onActivate?: (item: FeedItem) => void
@@ -162,7 +170,7 @@ export function RaceFeed({
 
   return (
     <div className="ev-scroll">
-      <div className="label">RACE FEED</div>
+      <div className="label">{lang === 'ru' ? 'ЛЕНТА ГОНКИ' : 'RACE FEED'}</div>
       <div className="ev-list">
         {items.map((item) => {
           const k = itemKey(item)
@@ -170,6 +178,7 @@ export function RaceFeed({
             <FeedRow
               key={k}
               item={item}
+              lang={lang}
               flash={flashKeys.has(k)}
               playingUrl={playingUrl}
               onToggleRadio={handleToggleRadio}
@@ -182,7 +191,7 @@ export function RaceFeed({
           <div className="ev">
             <span className="ev-lap" />
             <span className="t">—</span>
-            <span className="x">{loading ? 'Loading events…' : 'No events yet'}</span>
+            <span className="x">{lang === 'ru' ? (loading ? 'Загрузка событий…' : 'Событий пока нет') : (loading ? 'Loading events…' : 'No events yet')}</span>
           </div>
         )}
       </div>
