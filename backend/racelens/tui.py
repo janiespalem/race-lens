@@ -225,7 +225,7 @@ class RaceLensTUI(App[None]):
         self.lang = lang
         self.client = httpx.AsyncClient(
             base_url=api_url.rstrip("/") + "/",
-            timeout=httpx.Timeout(10, read=None),
+            timeout=10,
             headers={"Accept": "application/json", "User-Agent": "racelens-tui/0.1"},
         )
         self.entries: list[dict[str, str | None]] = []
@@ -363,6 +363,7 @@ class RaceLensTUI(App[None]):
             self.query_one("#status", Static).update(_TEXT[self.lang]["not_ready"])
 
     async def _open_live(self) -> None:
+        self.workers.cancel_group(self, "stream")
         self.mode, self.session_id = "live", None
         self.paused = self.ended = False
         self.connected = False
@@ -370,6 +371,7 @@ class RaceLensTUI(App[None]):
         self._start_stream()
 
     async def _open_replay(self, session_id: str) -> None:
+        self.workers.cancel_group(self, "stream")
         self.mode, self.session_id = "replay", session_id
         self.paused = self.ended = False
         self.connected = False
@@ -412,7 +414,9 @@ class RaceLensTUI(App[None]):
             )
             try:
                 saw_end = False
-                async with self.client.stream("GET", path, params=params) as response:
+                async with self.client.stream(
+                    "GET", path, params=params, timeout=httpx.Timeout(10, read=None),
+                ) as response:
                     response.raise_for_status()
                     self.connected = True
                     attempt = 0
