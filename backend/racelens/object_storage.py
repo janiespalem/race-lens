@@ -1302,6 +1302,14 @@ class ObjectPreparationQueue:
             existing = self._record(requests.get(session_id), statuses.get(session_id))
             if existing is not None and existing["status"] != "failed":
                 return existing, False
+            # Failed retries also allocate an active slot; duplicates above do not.
+            records = [
+                record
+                for item in set(requests) | set(statuses)
+                if (record := self._record(requests.get(item), statuses.get(item)))
+            ]
+            if sum(record["status"] in {"queued", "processing"} for record in records) >= self.max_jobs:
+                raise QueueFullError("preparation queue is full")
             if existing is not None:
                 request = requests.get(session_id) or {
                     "schema_version": SCHEMA_VERSION,
@@ -1318,13 +1326,6 @@ class ObjectPreparationQueue:
                     updated_at=now,
                 )
             else:
-                records = [
-                    record
-                    for item in set(requests) | set(statuses)
-                    if (record := self._record(requests.get(item), statuses.get(item)))
-                ]
-                if sum(record["status"] in {"queued", "processing"} for record in records) >= self.max_jobs:
-                    raise QueueFullError("preparation queue is full")
                 today = datetime.now(UTC).date()
                 if sum(
                     _parsed_time(request["created_at"]).date() == today

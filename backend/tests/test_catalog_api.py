@@ -335,6 +335,41 @@ def test_preparation_failed_object_record_retry_bumps_generation(tmp_path, monke
     assert record["generation"] == 2
 
 
+@pytest.mark.parametrize("processing", [False, True])
+def test_failed_retry_respects_active_queue_capacity(tmp_path, monkeypatch, processing):
+    import racelens.api as api
+
+    store = MemoryStore()
+    queue = ObjectPreparationQueue(store, max_jobs=1, max_attempts=1)
+    queue.enqueue("2024-08-r", "monaco_2024_race")
+    queue.claim_next()
+    queue.finish("2024-08-r", error="worker failure")
+    queue.enqueue("2024-09-r", "canada_2024_race")
+    if processing:
+        queue.claim_next()
+
+    monkeypatch.setattr(api, "FIXTURES_DIR", tmp_path)
+    monkeypatch.setattr(api, "STORAGE_CONFIG", object())
+    monkeypatch.setattr(api, "_object_queue", lambda: queue)
+    client = TestClient(api.app)
+
+    response = client.post("/api/catalog/2024-08-r/prepare")
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "60"
+    assert queue.get("2024-08-r")["status"] == "failed"
+    assert queue.get("2024-08-r")["generation"] == 1
+    # An idempotent request needs no new slot, even when capacity is exhausted.
+    assert client.post("/api/catalog/2024-09-r/prepare").status_code == 202
+
+    if not processing:
+        queue.claim_next()
+    queue.finish("2024-09-r", error="worker failure")
+    retried = client.post("/api/catalog/2024-08-r/prepare")
+    assert retried.status_code == 202
+    assert retried.json()["status"] == "queued"
+    assert queue.get("2024-08-r")["generation"] == 2
+
+
 def test_local_ready_replay_beats_stale_active_queue_record(tmp_path, monkeypatch):
     import racelens.api as api
     import racelens.catalog as catalog
