@@ -208,6 +208,9 @@ function App() {
 
   const replay = useReplay(source)
   const lang = replay.lang
+  useEffect(() => {
+    document.documentElement.lang = lang
+  }, [lang])
   const scrubReplay = replay.scrub
   const pauseReplay = replay.pause
   const [pocketApplied, setPocketApplied] = useState(false)

@@ -48,6 +48,26 @@ const deck = {
   onScrub() {}, onPlay() {}, onPause() {}, onSpeed() {},
 }
 
+test('document speech language follows the viewer language independently of playback', () => {
+  const app = ts.createSourceFile('main.tsx', readFileSync(resolve(root, 'main.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let checked = false
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(app) === 'useEffect' && node.arguments[0]?.getText(app).includes('document.documentElement.lang')) {
+      assert.equal(node.arguments[1]?.getText(app), '[lang]')
+      const effect = ts.transpileModule(node.arguments[0].getText(app), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+      const document = { documentElement: { lang: 'en' } }
+      for (const lang of ['ru', 'en']) {
+        new Function('document', 'lang', `return (${effect.trim().replace(/;$/, '')})()`)(document, lang)
+        assert.equal(document.documentElement.lang, lang)
+      }
+      checked = true
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(app)
+  assert.ok(checked, 'App must synchronize document language')
+})
+
 test('EN → RU → EN renders shell, controls and selection without changing playback props', () => {
   const baseline = JSON.stringify(deck)
   const outputs = ['en', 'ru', 'en'].map((lang) => {
