@@ -145,6 +145,8 @@ export type RaceState = {
   total_laps: number | null
   /** Latest source-backed F1 weather sample at this point in session time. */
   weather?: WeatherState | null
+  /** Per-field source observation time (session ms) for weather values. */
+  weather_observed_at_ms?: Record<string, number>
   classification: string[]
   drivers: Record<string, DriverState>
   data_quality: DataQuality

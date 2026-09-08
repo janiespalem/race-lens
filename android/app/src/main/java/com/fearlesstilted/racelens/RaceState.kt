@@ -84,6 +84,16 @@ fun conditionsSummary(weather: Weather) = buildList {
     weather.airTempC?.let { add("AIR ${it.toInt()}°") }
 }.joinToString(" · ")
 
+const val WEATHER_STALE_MS = 300_000L
+
+/** Age/staleness of the newest source-reported weather field; null when unknown. */
+fun weatherAgeLabel(weather: Weather, atMs: Long): String? {
+    val latest = weather.observedAtMs.values.maxOrNull() ?: return null
+    val age = (atMs - latest).coerceAtLeast(0)
+    val minutes = age / 60_000
+    return if (age >= WEATHER_STALE_MS) "WEATHER STALE · ${minutes}M" else "SOURCE AGE ${minutes}M"
+}
+
 fun resolvedReplayStart(requestedMs: Long, timeline: Timeline, hasDrivers: Boolean): Long {
     if (requestedMs != 0L || hasDrivers) return requestedMs
     return timeline.lightsOutMs.coerceIn(timeline.startMs.coerceAtLeast(0), timeline.endMs)

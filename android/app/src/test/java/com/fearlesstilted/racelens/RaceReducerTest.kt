@@ -310,3 +310,19 @@ class SectorParsingTest {
         assertEquals(emptyList<SectorTime?>(), parseSectors(null))
     }
 }
+
+class WeatherFreshnessTest {
+    @Test
+    fun weatherAgeFollowsTheNewestSourceReportedField() {
+        val weather = Weather(true, 32.9, 18.7, mapOf("air_temp_c" to 10_000L, "track_temp_c" to 100_000L))
+        assertEquals("SOURCE AGE 0M", weatherAgeLabel(weather, 5_000)) // newest field ahead of frame clamps to 0
+        assertEquals("SOURCE AGE 0M", weatherAgeLabel(weather, 100_000))
+        assertEquals("SOURCE AGE 2M", weatherAgeLabel(weather, 220_000))
+        assertEquals("WEATHER STALE · 6M", weatherAgeLabel(weather, 460_000))
+    }
+
+    @Test
+    fun weatherAgeIsUnknownForLegacySnapshotsWithoutObservationTimes() {
+        assertNull(weatherAgeLabel(Weather(null, null, null, emptyMap()), 100_000))
+    }
+}
