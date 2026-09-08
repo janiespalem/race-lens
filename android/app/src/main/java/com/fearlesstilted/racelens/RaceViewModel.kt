@@ -120,7 +120,11 @@ class RaceViewModel : ViewModel() {
     }
 
     fun retry() = when {
-        state.frame.target.sessionId.isBlank() -> refresh()
+        state.frame.target.sessionId.isBlank() -> {
+            // Wake the cadence now; completion restarts only after old IO finishes.
+            refreshJob?.cancel()
+            refresh()
+        }
         state.frame.target.mode == WatchMode.LIVE -> {
             cancelActiveStream()
             startLiveStream()
