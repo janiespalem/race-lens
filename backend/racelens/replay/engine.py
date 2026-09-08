@@ -37,10 +37,15 @@ _EVENT_PRIORITY = {
 }
 
 
-def _event_sort_key(value: Event) -> tuple[int, int, int, str]:
+def _event_sort_key(value: Event) -> tuple[int, int, int, int, str]:
+    # Clamped prestart messages retain source chronology, even after a late poll.
+    prestart_ms = value.payload.get("prestart_time_ms", 0)
+    if value.session_time_ms != 0 or type(prestart_ms) is not int or prestart_ms >= 0:
+        prestart_ms = 0
     return (
         value.session_time_ms,
         _EVENT_PRIORITY.get(value.type, 50),
+        prestart_ms,
         value.ingest_seq if value.ingest_seq is not None else -1,
         value.event_id,
     )

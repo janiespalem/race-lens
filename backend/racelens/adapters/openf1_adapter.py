@@ -569,7 +569,9 @@ def _rows_to_events(
     def mk(sid: str, type_: str, t_ms: int, drv: str | None = None,
            lap: int | None = None, **kw) -> Event:
         nonlocal seq
-        e = event(sid, type_, t_ms, drv, lap=lap, source=src, **kw)
+        if t_ms < 0:
+            kw["prestart_time_ms"] = t_ms
+        e = event(sid, type_, max(t_ms, 0), drv, lap=lap, source=src, **kw)
         e.ingest_seq = seq
         seq += 1
         return e
@@ -598,7 +600,10 @@ def _rows_to_events(
     events.extend(_pits_to_events(pit_rows, driver_map, sid, to_ms, mk))
     events.extend(_stints_to_events(stint_rows, lap_rows, driver_map, sid, to_ms, mk))
     events.extend(_intervals_to_events(interval_rows, driver_map, sid, to_ms, mk))
-    events.extend(_race_control_to_events(rc_rows, sid, to_ms, mk))
+    # Keep prestart message identity; leave other helpers' sampling clocks unchanged.
+    events.extend(_race_control_to_events(
+        rc_rows, sid, lambda date: round((date - t0_posix) * 1000), mk,
+    ))
 
     # TODO(live-map): OpenF1 /location endpoint streams X/Y car positions at ~3.7 Hz
     # during a live session.  Ingest that here to replace dead-reckoning in the

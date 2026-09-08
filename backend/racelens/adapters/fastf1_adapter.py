@@ -185,15 +185,23 @@ def session_to_events(ses, sid: str, src: str = "fastf1") -> list[Event]:
     # LapStartTime remains the authoritative start anchor.
     lap1 = ses.laps[ses.laps["LapNumber"] == 1]
     t0_ms = _ms(fastf1_lap1_start(lap1)) or 0
-    if t0_ms:
-        for e in events:
-            e.session_time_ms = max(e.session_time_ms - t0_ms, 0)
-            e.event_id = make_event_id(
-                e.session_id, e.type, e.session_time_ms, e.driver_id, e.payload
-            )
+    _rebase_events(events, t0_ms)
 
     events.sort(key=lambda e: (e.session_time_ms, e.event_id))
     return events
+
+
+def _rebase_events(events: list[Event], t0_ms: int) -> None:
+    """Keep prestart race-control provenance when display time clamps to zero."""
+    if t0_ms:
+        for e in events:
+            relative_ms = e.session_time_ms - t0_ms
+            e.session_time_ms = max(relative_ms, 0)
+            if relative_ms < 0 and e.type in {"RaceControlMessage", "SessionStatusChanged"}:
+                e.payload["prestart_time_ms"] = relative_ms
+            e.event_id = make_event_id(
+                e.session_id, e.type, e.session_time_ms, e.driver_id, e.payload
+            )
 
 
 def _race_control_to_events(messages, sid: str, session_zero, src: str) -> list[Event]:
