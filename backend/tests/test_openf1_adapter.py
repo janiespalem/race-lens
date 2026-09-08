@@ -617,3 +617,18 @@ def test_neutralization_waits_for_actual_green_and_track_clear_does_not_restart_
     assert [e.payload["message"] for e in events if e.type == "RaceControlMessage"] == [
         message for message, _ in messages
     ]
+
+
+def test_race_control_preserves_source_order_on_equal_timestamps():
+    rows = [
+        {"date": "2024-05-26T13:00:02.000", "category": "Flag", "message": "RED FLAG"},
+        {"date": "2024-05-26T13:00:01.000", "category": "SafetyCar", "message": "VSC DEPLOYED"},
+        {"date": "2024-05-26T13:00:01.000", "category": "Flag", "message": "TRACK CLEAR"},
+        {"date": "invalid", "category": "SafetyCar", "message": "SAFETY CAR DEPLOYED"},
+    ]
+    events = _ingest({"/race_control": rows})
+    engine = ReplayEngine(events)
+
+    assert engine.state_at(1000)["session_status"] == "started"
+    assert engine.state_at(2000)["session_status"] == "red_flag"
+    assert not any(e.payload.get("message") == "SAFETY CAR DEPLOYED" for e in events)
