@@ -86,12 +86,17 @@ fun conditionsSummary(weather: Weather) = buildList {
 
 const val WEATHER_STALE_MS = 300_000L
 
-/** Age/staleness of the newest source-reported weather field; null when unknown. */
+/** Age/staleness of the OLDEST source-reported weather field; null when unknown.
+ *
+ * A fresh air reading must not hide a stale track/rain value: the label
+ * reflects the worst displayed field, never the newest.
+ */
 fun weatherAgeLabel(weather: Weather, atMs: Long): String? {
-    val latest = weather.observedAtMs.values.maxOrNull() ?: return null
-    val age = (atMs - latest).coerceAtLeast(0)
-    val minutes = age / 60_000
-    return if (age >= WEATHER_STALE_MS) "WEATHER STALE · ${minutes}M" else "SOURCE AGE ${minutes}M"
+    val observed = weather.observedAtMs
+    if (observed.isEmpty()) return null
+    val worst = observed.values.maxOf { (atMs - it).coerceAtLeast(0) }
+    val minutes = worst / 60_000
+    return if (worst >= WEATHER_STALE_MS) "WEATHER STALE · ${minutes}M" else "SOURCE AGE ${minutes}M"
 }
 
 fun resolvedReplayStart(requestedMs: Long, timeline: Timeline, hasDrivers: Boolean): Long {

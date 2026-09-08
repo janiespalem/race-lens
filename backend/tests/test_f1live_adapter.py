@@ -497,3 +497,40 @@ def test_rapid_position_loss_under_yellow_reports_trouble_but_not_pit_stop(tmp_p
         item["driver_id"] == "COL" and "P5" in item["text"] and "P21" in item["text"]
         for item in render_feed(events, until_ms=70_000)
     )
+
+
+def test_untimestamped_reconnect_weather_is_not_a_fresh_observation(tmp_path):
+    """A reconnect keyframe repeats current values; it must not re-stamp them.
+
+    Regression: keyframes carry no timestamp and were previously emitted at the
+    join moment, making old weather look freshly observed in the engine.
+    """
+    lines = [
+        "['SessionStatus', {'Status': 'Started'}, '2026-08-23T13:00:00Z']",
+        repr([
+            "WeatherData",
+            {"AirTemp": "18.7", "TrackTemp": "32.9", "Rainfall": "0"},
+            "2026-08-23T13:01:00Z",
+        ]),
+        repr([
+            "WeatherData",
+            {"AirTemp": "18.7", "TrackTemp": "32.9", "Rainfall": "0"},
+            "",
+        ]),
+        "['Heartbeat', {}, '2026-08-23T13:20:00Z']",
+    ]
+    feed = tmp_path / "reconnect-weather.txt"
+    feed.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    events = ingest_f1live(str(feed), session_id="reconnect-weather")
+
+    weather = [e for e in events if e.type == "WeatherUpdated"]
+    assert [e.session_time_ms for e in weather] == [60_000]
+
+    state = ReplayEngine(events).state_at(1_200_000)
+    # The observation keeps its real source time; the reconnect snapshot
+    # did not rejuvenate it to the join moment.
+    assert state["weather_observed_at_ms"] == {
+        "air_temp_c": 60_000,
+        "track_temp_c": 60_000,
+        "rainfall": 60_000,
+    }

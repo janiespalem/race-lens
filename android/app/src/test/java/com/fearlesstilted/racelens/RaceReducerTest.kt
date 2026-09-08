@@ -313,16 +313,35 @@ class SectorParsingTest {
 
 class WeatherFreshnessTest {
     @Test
-    fun weatherAgeFollowsTheNewestSourceReportedField() {
-        val weather = Weather(true, 32.9, 18.7, mapOf("air_temp_c" to 10_000L, "track_temp_c" to 100_000L))
-        assertEquals("SOURCE AGE 0M", weatherAgeLabel(weather, 5_000)) // newest field ahead of frame clamps to 0
-        assertEquals("SOURCE AGE 0M", weatherAgeLabel(weather, 100_000))
-        assertEquals("SOURCE AGE 2M", weatherAgeLabel(weather, 220_000))
-        assertEquals("WEATHER STALE · 6M", weatherAgeLabel(weather, 460_000))
+    fun weatherAgeFollowsTheOldestSourceReportedField() {
+        // Air was re-reported at 100s; track/rain stopped 90s earlier. The
+        // label must reflect the stale fields, not the fresh air reading.
+        val weather = Weather(true, 32.9, 18.7, mapOf("air_temp_c" to 100_000L, "track_temp_c" to 10_000L, "rainfall" to 10_000L))
+        assertEquals("SOURCE AGE 1M", weatherAgeLabel(weather, 100_000))
+        assertEquals("SOURCE AGE 3M", weatherAgeLabel(weather, 220_000))
+        assertEquals("WEATHER STALE · 7M", weatherAgeLabel(weather, 460_000))
+    }
+
+    @Test
+    fun weatherAgeClampsFramesAheadOfTheObservation() {
+        val weather = Weather(true, 32.9, 18.7, mapOf("air_temp_c" to 100_000L, "track_temp_c" to 100_000L))
+        assertEquals("SOURCE AGE 0M", weatherAgeLabel(weather, 5_000))
     }
 
     @Test
     fun weatherAgeIsUnknownForLegacySnapshotsWithoutObservationTimes() {
         assertNull(weatherAgeLabel(Weather(null, null, null, emptyMap()), 100_000))
+    }
+}
+
+class WeatherObservedParsingTest {
+    @Test
+    fun observationAtSessionStartIsAValidTimestamp() {
+        val json = org.json.JSONObject(
+            "{\"rainfall\": 0, \"air_temp_c\": 15000, \"missing\": null}",
+        )
+        // Rainfall observed at t=0 must survive; null/absent entries are dropped.
+        assertEquals(mapOf("rainfall" to 0L, "air_temp_c" to 15_000L), parseWeatherObserved(json))
+        assertEquals(emptyMap<String, Long>(), parseWeatherObserved(null))
     }
 }
