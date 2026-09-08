@@ -479,7 +479,10 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
             if isinstance(lines, dict):
                 apply_tyres(lines, t_ms)
         elif cat == "WeatherData":
-            if weather := _parse_weather(payload):
+            # Untimestamped reconnect keyframes repeat the current snapshot, not
+            # new observations (same rule as sector deltas). Stamping their
+            # values with the join time would fake freshness for old weather.
+            if t_posix is not None and (weather := _parse_weather(payload)):
                 events.append(event(sid, "WeatherUpdated", t_ms, source="f1live", **weather))
         elif cat == "TrackStatus":
             if emit_activity and str(payload.get("Message", "")).lower() == "yellow":

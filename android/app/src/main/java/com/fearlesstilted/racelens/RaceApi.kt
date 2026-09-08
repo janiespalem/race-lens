@@ -186,13 +186,15 @@ internal fun parseSectors(items: JSONArray?): List<SectorTime?> =
         }
     }
 
-private fun parseWeatherObserved(items: JSONObject?): Map<String, Long> =
+internal fun parseWeatherObserved(items: JSONObject?): Map<String, Long> =
     if (items == null) emptyMap() else buildMap {
         val keys = items.keys()
         while (keys.hasNext()) {
             val key = keys.next()
-            val atMs = items.optLong(key)
-            if (atMs > 0) put(key, atMs)
+            // optLong(key, -1): absent/null → -1 (dropped), real 0 stays —
+            // an observation at session start is a valid timestamp.
+            val atMs = items.optLong(key, -1)
+            if (atMs >= 0) put(key, atMs)
         }
     }
 

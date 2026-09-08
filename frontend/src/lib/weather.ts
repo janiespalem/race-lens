@@ -13,20 +13,30 @@ export function formatWeather(weather?: WeatherState | null, lang: Lang = 'en'):
   return parts.length ? parts.join(' · ') : null
 }
 
-/** Age of the newest weather value the source actually re-reported, in ms. */
+/** Fields the UI actually renders; staleness is judged only for these. */
+const DISPLAYED_WEATHER_KEYS = ['rainfall', 'track_temp_c', 'air_temp_c'] as const
+
+/** Worst-case age of any displayed weather value the source re-reported, in ms.
+ *
+ * A fresh air reading never hides a stale track/rain value: the badge reflects
+ * the oldest displayed field, not the newest. Unknown observation times (old
+ * archives) or missing weather yield null.
+ */
 export function weatherAgeMs(
   weather: WeatherState | null | undefined,
   observed: Record<string, number> | null | undefined,
   atMs: number,
 ): number | null {
   if (!weather || !observed) return null
-  let latest: number | null = null
-  for (const key of Object.keys(weather)) {
+  let worst: number | null = null
+  for (const key of DISPLAYED_WEATHER_KEYS) {
+    if (weather[key] == null) continue
     const at = observed[key]
-    if (typeof at === 'number' && (latest === null || at > latest)) latest = at
+    if (typeof at !== 'number') continue
+    const age = Math.max(0, atMs - at)
+    if (worst === null || age > worst) worst = age
   }
-  if (latest === null) return null
-  return Math.max(0, atMs - latest)
+  return worst
 }
 
 /** Compact age/staleness badge; null when the source age is unknown. */
