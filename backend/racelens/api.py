@@ -1074,12 +1074,12 @@ async def live_stream(
         await asyncio.to_thread(_remote_live_required, snapshot=False)
 
     async def gen():
-        # Passes cache: recomputed only when the live engine's event count grows
-        # (a fresh detect_passes() pass over the whole event list each poll would
-        # be wasted work — most ticks see no new events between polls).
-        passes_cache: dict[str, Any] = {"count": -1, "passes": []}
+        # A corrected authoritative snapshot can replace events without growing.
+        passes_engine = None
+        passes = []
         while True:
-            if _live is None:
+            runner = _live
+            if runner is None:
                 try:
                     current = await asyncio.to_thread(
                         _remote_live_required, snapshot=False,
@@ -1109,24 +1109,26 @@ async def live_stream(
                     yield f"data: {json.dumps(state)}\n\n"
                 await asyncio.sleep(tick_s)
                 continue
-            if _live is None or not _live.is_running:
+            if not runner.is_running:
                 # Runner stopped (explicitly or via auto-stop) — reap the capture
                 # subprocess if it's still around, signal end, close the stream.
                 _reap_capture_if_stopped()
                 yield "event: end\ndata: {}\n\n"
                 return
-            if _live.engine is None:
+            engine = runner.engine
+            if engine is None or not engine.events:
                 # Runner alive but no data yet — send empty heartbeat and keep waiting.
                 yield "data: {}\n\n"
             else:
-                events = _live.engine.events
-                if len(events) != passes_cache["count"]:
-                    passes_cache["passes"] = detect_passes(events)
-                    passes_cache["count"] = len(events)
-                state = _attach_frame(_live.state_now())
+                events = engine.events
+                if engine is not passes_engine:
+                    passes = detect_passes(events)
+                    passes_engine = engine
+                state = _attach_frame(engine.state_at(events[-1].session_time_ms))
+                state["live_status"] = runner.status()
                 state["active_insights"] = detect_all(state)
                 state["commentary"] = render_all(state["active_insights"], lang, level)
-                state["recent_passes"] = _recent_passes(passes_cache["passes"], state["at_ms"])
+                state["recent_passes"] = _recent_passes(passes, state["at_ms"])
                 state["battles"] = detect_battles(state)
                 total_laps = state.get("total_laps") or state.get("lap") or 0
                 state["stints"] = {
@@ -1150,13 +1152,15 @@ async def live_feed(
     limit: int = Query(default=30, ge=1, le=100),
 ) -> list:
     """Event feed for the frontend during live mode (no session_id to scope by)."""
-    if _live is None:
+    runner = _live
+    if runner is None:
         snapshot = (await asyncio.to_thread(_remote_live_required))["snapshot"]
         return snapshot["feed"].get(lang, snapshot["feed"]["en"])[:limit]
-    if _live.engine is None:
+    engine = runner.engine
+    if engine is None or not engine.events:
         raise HTTPException(404, "No live session active or no data yet")
-    until_ms = _live.engine.events[-1].session_time_ms
-    items = render_feed(_live.engine.events, until_ms, lang=lang, limit=limit)
+    until_ms = engine.events[-1].session_time_ms
+    items = render_feed(engine.events, until_ms, lang=lang, limit=limit)
     # Whisper transcripts: queued on first sight, mixed in once the background
     # worker is done (text appears in the feed ~a minute after the clip).
     for item in items:
@@ -1196,10 +1200,10 @@ async def live_stop() -> dict:
 async def live_forecast(laps: int = Query(default=10, ge=1, le=50)) -> dict:
     if _live is None:
         state = (await asyncio.to_thread(_remote_live_required))["snapshot"]["race_state"]
-    elif _live.engine is None:
-        raise HTTPException(404, "No live session active or no data yet")
     else:
         state = _live.state_now()
+        if "error" in state:
+            raise HTTPException(404, "No live session active or no data yet")
     return project_order(state, laps_ahead=laps)
 
 
@@ -1209,10 +1213,10 @@ async def live_win_prob() -> dict:
         remote = await asyncio.to_thread(_remote_live_required)
         state = remote["snapshot"]["race_state"]
         session_id = remote["pointer"]["replay_session_id"]
-    elif _live.engine is None:
-        raise HTTPException(404, "No live session active or no data yet")
     else:
         state = _live.state_now()
+        if "error" in state:
+            raise HTTPException(404, "No live session active or no data yet")
         session_id = _live_session_id or ""
     return win_probability(state, session_id)
 
@@ -1222,9 +1226,9 @@ async def live_battles() -> dict:
     if _live is None:
         snapshot = (await asyncio.to_thread(_remote_live_required))["snapshot"]
         return {"at_ms": snapshot["race_state"]["at_ms"], "battles": snapshot["battles"]}
-    if _live.engine is None:
-        raise HTTPException(404, "No live session active or no data yet")
     state = _live.state_now()
+    if "error" in state:
+        raise HTTPException(404, "No live session active or no data yet")
     return {"at_ms": state["at_ms"], "battles": detect_battles(state)}
 
 
@@ -1234,10 +1238,10 @@ async def live_simulate_pit(driver: str = Query(...)) -> dict:
         remote = await asyncio.to_thread(_remote_live_required)
         state = remote["snapshot"]["race_state"]
         session_id = remote["pointer"]["replay_session_id"]
-    elif _live.engine is None:
-        raise HTTPException(404, "No live session active or no data yet")
     else:
         state = _live.state_now()
+        if "error" in state:
+            raise HTTPException(404, "No live session active or no data yet")
         session_id = _live_session_id or ""
     return simulate_pit(state, driver, session_id)
 
@@ -1395,13 +1399,17 @@ def live_track() -> dict:
 
 @app.get("/api/live/stints")
 def live_stints() -> dict:
-    if _live is not None and _live.engine is not None:
-        state = _live.state_now()
+    runner = _live
+    if runner is not None:
+        engine = runner.engine
+        if engine is None or not engine.events:
+            raise HTTPException(404, "No live session active or no data yet")
+        state = engine.state_at(engine.events[-1].session_time_ms)
         total_laps = state.get("total_laps") or state.get("lap") or 0
         return {
             "session_id": state["session_id"],
             "total_laps": total_laps,
-            "stints": stint_timeline(_live.engine.events, total_laps),
+            "stints": stint_timeline(engine.events, total_laps),
         }
     snapshot = _remote_live_required()["snapshot"]
     if "stints" not in snapshot:
