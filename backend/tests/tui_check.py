@@ -85,6 +85,48 @@ async def check_resize_ui() -> None:
         await pilot.pause()
 
 
+async def check_session_switch_and_timeouts() -> None:
+    metadata_started, release_metadata = asyncio.Event(), asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/stream"):
+            assert request.extensions["timeout"]["read"] is None
+            return httpx.Response(200, text="event: end\ndata: {}\n\n")
+        read_timeout = request.extensions["timeout"]["read"]
+        assert read_timeout is not None and read_timeout > 0, "GET reads must be bounded"
+        if "/new_session/" in request.url.path:
+            metadata_started.set()
+            await release_metadata.wait()
+            return httpx.Response(200, json={})
+        raise httpx.ReadTimeout("side data stalled", request=request)
+
+    app = RaceLensTUI("https://api.example", "en")
+    timeout = app.client.timeout
+    await app.client.aclose()
+    app.client = httpx.AsyncClient(
+        base_url="https://api.example/", timeout=timeout, transport=httpx.MockTransport(handler),
+    )
+    async with app.run_test(size=(100, 28)) as pilot:
+        await pilot.pause()
+        assert await app._optional_get("/stalled") is None
+        app.mode, app.session_id = "replay", "old_session"
+        app.stream_worker = app.run_worker(
+            asyncio.Event().wait(), exclusive=True, group="stream",
+        )
+        old_stream = app.stream_worker
+        pending_seek = app.run_worker(asyncio.Event().wait(), group="stream")
+        opening = asyncio.create_task(app._open_replay("new_session"))
+        try:
+            await asyncio.wait_for(metadata_started.wait(), timeout=1)
+            assert old_stream.is_cancelled, "cancel the old session before loading new metadata"
+            assert pending_seek.is_cancelled, "cancel pending seeks for the old session too"
+        finally:
+            release_metadata.set()
+            await opening
+        await pilot.pause()
+        assert app.session_id == "new_session" and app.ended
+
+
 def main() -> None:
     assert resize_message(99, 28, "en") == "Resize terminal to at least 100x28 (now 99x28)."
     assert resize_message(100, 28, "en") is None
@@ -149,6 +191,7 @@ def main() -> None:
     ) == "ДАННЫЕ ЗАДЕРЖИВАЮТСЯ · ПЕРЕПОДКЛЮЧЕНИЕ"
 
     asyncio.run(check_resize_ui())
+    asyncio.run(check_session_switch_and_timeouts())
     print("TUI check passed")
 
 
