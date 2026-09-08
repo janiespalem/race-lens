@@ -116,8 +116,16 @@ export const useReplay = (source: DataSource | null): ReplayModel => {
     [source?.kind, sessionId],
   )
 
-  const { loadSnapshot } = useSnapshotLoader(sessionId, set)
-  const { closeStream, openStream } = useReplayStream(active, getStreamUrl, sessionId, set)
+  const { loadSnapshot, cancelSnapshot } = useSnapshotLoader(sessionId, set)
+  const { closeStream, openStream: startStream } = useReplayStream(active, getStreamUrl, sessionId, set)
+  const openStream = useCallback((s: Speed, ms: number, l: Lang, lv: Level) => {
+    cancelSnapshot()
+    if (scrubTimeoutRef.current !== null) {
+      window.clearTimeout(scrubTimeoutRef.current)
+      scrubTimeoutRef.current = null
+    }
+    startStream(s, ms, l, lv)
+  }, [cancelSnapshot, startStream])
   const { greenFlag, greenFlagText } = useGreenFlag(atMs, markers, timeline?.lights_out_ms ?? 0)
 
   const loadPositionsWindow = useCallback((sid: string, centerMs: number, supersedeRetry = false) => {
@@ -209,9 +217,7 @@ export const useReplay = (source: DataSource | null): ReplayModel => {
       .catch((err: unknown) => {
         if (cancelled) return
         setError(err instanceof Error ? err.message : 'Could not load replay timeline')
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
+        setLoading(false)
       })
 
     return () => {
@@ -276,6 +282,7 @@ export const useReplay = (source: DataSource | null): ReplayModel => {
     (nextAtMs: number) => {
       if (!isReplay) return // live: scrub disabled
       closeStream()
+      cancelSnapshot()
       setPlaying(false)
       setAtMs(nextAtMs)
       setRecentPasses([]) // stream-only data — stale once we jump off the live frame sequence
@@ -286,7 +293,7 @@ export const useReplay = (source: DataSource | null): ReplayModel => {
         void loadSnapshot(nextAtMs, lang, level)
       }, SCRUB_DEBOUNCE_MS)
     },
-    [closeStream, isReplay, lang, level, loadPositionsWindow, loadSnapshot, positionsData, sessionId],
+    [cancelSnapshot, closeStream, isReplay, lang, level, loadPositionsWindow, loadSnapshot, positionsData, sessionId],
   )
 
   const play = useCallback(() => {

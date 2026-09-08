@@ -16,6 +16,11 @@ export function useSnapshotLoader(sessionId: string | null, set: ReplaySetters) 
     requestSeq.current++
   }, [sessionId])
 
+  const cancelSnapshot = useCallback(() => {
+    requestSeq.current++
+    set.setLoading(false)
+  }, [set])
+
   const loadSnapshot = useCallback(
     async (nextAtMs: number, nextLang: Lang, nextLevel: Level) => {
       if (!sessionId) return
@@ -64,5 +69,5 @@ export function useSnapshotLoader(sessionId: string | null, set: ReplaySetters) 
     [sessionId, set],
   )
 
-  return { loadSnapshot }
+  return { loadSnapshot, cancelSnapshot }
 }

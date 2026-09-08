@@ -21,5 +21,5 @@ export function buildStreamUrl(source: DataSource, lang: Lang, level: Level, spe
   }
   const s = speed ?? 10
   const tick = s === 1 ? 500 : s === 5 ? 1000 : 2000
-  return replayStreamUrl(source.sessionId, s, atMs ?? 0, tick)
+  return replayStreamUrl(source.sessionId, s, atMs ?? 0, tick, lang, level)
 }

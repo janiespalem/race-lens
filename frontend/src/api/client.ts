@@ -44,8 +44,8 @@ export const getState = (sessionId: string, atMs: number) =>
 export const getInsights = (sessionId: string, atMs: number) =>
   json<InsightsResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/insights?at_ms=${atMs}`)
 
-export const streamUrl = (sessionId: string, speed: number, fromMs: number, tickMs = 1000) =>
-  apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/stream?speed=${speed}&from_ms=${fromMs}&tick_ms=${tickMs}`)
+export const streamUrl = (sessionId: string, speed: number, fromMs: number, tickMs = 1000, lang = 'en', level = 'pro') =>
+  apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/stream?speed=${speed}&from_ms=${fromMs}&tick_ms=${tickMs}&lang=${lang}&level=${level}`)
 
 /** The backend returns a bare list; normalise to {items} for the rest of the app. */
 export const getFeed = async (sessionId: string, untilMs: number, limit = 30, lang = 'en'): Promise<FeedResponse> => {
