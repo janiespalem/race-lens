@@ -35,6 +35,7 @@ jobs:
       - name: Publish through data PR
         env:
           BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         run: |
@@ -46,4 +47,4 @@ jobs:
               --body "Validated recorder publication. Merged automatically after CI.")
             pr=${url##*/}
           fi
-          gh pr merge --repo "$REPOSITORY" --rebase "$pr"
+          gh pr merge --repo "$REPOSITORY" --rebase --match-head-commit "$SHA" "$pr"
