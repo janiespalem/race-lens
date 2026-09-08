@@ -135,6 +135,7 @@ _live_session_id: Optional[str] = None
 # Two-second process cache: remote Live is one current pointer plus one bounded
 # snapshot, so there is no reason to hit object storage on every GET/SSE tick.
 _remote_live_cache: tuple[float, dict | None] | None = None
+_remote_live_lock = Lock()
 
 # Lock to prevent concurrent start requests.
 _start_lock: asyncio.Lock = asyncio.Lock()
@@ -232,18 +233,20 @@ def _utcnow() -> datetime:
 
 def _remote_live() -> dict | None:
     global _remote_live_cache
-    now = time.monotonic()
-    if _remote_live_cache is not None and now - _remote_live_cache[0] < 2:
-        return _remote_live_cache[1]
-    try:
-        store = _object_store()
-        value = load_live(store, now=_utcnow()) if store is not None else None
-    except LiveRecordError as exc:
-        raise HTTPException(502, "Current live data is invalid") from exc
-    except StorageError as exc:
-        raise HTTPException(503, "Live storage is temporarily unavailable") from exc
-    _remote_live_cache = (now, value)
-    return value
+    # One refresh serves concurrent status/feed/SSE readers of the current Live.
+    with _remote_live_lock:
+        now = time.monotonic()
+        if _remote_live_cache is not None and now - _remote_live_cache[0] < 2:
+            return _remote_live_cache[1]
+        try:
+            store = _object_store()
+            value = load_live(store, now=_utcnow()) if store is not None else None
+        except LiveRecordError as exc:
+            raise HTTPException(502, "Current live data is invalid") from exc
+        except StorageError as exc:
+            raise HTTPException(503, "Live storage is temporarily unavailable") from exc
+        _remote_live_cache = (now, value)
+        return value
 
 
 def _remote_live_required(*, snapshot: bool = True) -> dict:

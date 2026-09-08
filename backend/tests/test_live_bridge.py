@@ -640,6 +640,42 @@ def test_capture_loop_restarts_and_publishes_every_five_seconds_only_with_storag
     assert publishes == []
 
 
+def test_remote_live_concurrent_readers_share_one_storage_refresh(monkeypatch):
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    import racelens.api as api
+
+    class SlowStore(MemoryStore):
+        reads = 0
+
+        def get_json(self, key, *, limit):
+            self.reads += 1
+            time.sleep(0.05)  # Allow concurrent callers while storage is in flight.
+            return super().get_json(key, limit=limit)
+
+    store = SlowStore()
+    pointer, snapshot = _valid_records()
+    storage.write_live_snapshot(store, pointer, snapshot, now=NOW)
+    store.reads = 0
+    monkeypatch.setattr(api, "_object_store", lambda: store)
+    monkeypatch.setattr(api, "_utcnow", lambda: NOW)
+    monkeypatch.setattr(api, "_remote_live_cache", None)
+    start = Barrier(4)
+
+    def read(_):
+        start.wait(timeout=5)
+        return api._remote_live_required()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        values = list(pool.map(read, range(4)))
+
+    assert all(value["snapshot"]["sequence"] == 1 for value in values)
+    assert len({id(value) for value in values}) == 1
+    assert store.reads == 2  # One pointer and one snapshot, not two per viewer.
+
+
 def test_remote_live_api_fallback_cache_and_sanitized_storage_failure(monkeypatch):
     import racelens.api as api
 
