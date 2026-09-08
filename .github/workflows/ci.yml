@@ -28,11 +28,12 @@ jobs:
       - name: Install dependencies
         run: |
           cd backend
-          pip install -e ".[dev,api]"
+          pip install -e ".[dev,api,tui]"
       - name: Run tests
         run: |
           cd backend
           python -m pytest -q
+          python tests/tui_check.py
       - name: Lint
         if: matrix.python-version == '3.12'
         run: |
@@ -74,6 +75,6 @@ jobs:
           npm ci
           npm run build
           npm run lint
-          npm run check:insight-presentation
-          npm run check:live-lifecycle
-          npm run check:pocket
+          for script in scripts/check-*.ts; do
+            node "$script"
+          done
