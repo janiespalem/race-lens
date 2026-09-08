@@ -8,30 +8,46 @@ from __future__ import annotations
 # (chequeRED FLAG).
 STATUS_TABLE: tuple[tuple[str, str], ...] = (
     ("CHEQUERED FLAG", "finished"),
-    # VSC endings must come before the generic VSC DEPLOYED and SAFETY CAR DEPLOYED
-    ("VIRTUAL SAFETY CAR ENDING", "started"),
-    ("VSC ENDING", "started"),
     ("VIRTUAL SAFETY CAR DEPLOYED", "vsc"),
     ("VSC DEPLOYED", "vsc"),
-    # "SAFETY CAR IN THIS LAP" means the SC is returning next lap — racing resumes.
-    # It must come BEFORE "SAFETY CAR DEPLOYED" (which is a substring-overlap risk).
-    ("SAFETY CAR IN THIS LAP", "started"),
     ("SAFETY CAR DEPLOYED", "safety_car"),
     ("RED FLAG", "red_flag"),
 )
 
 
-def message_to_status(text: str, table: tuple[tuple[str, str], ...] = STATUS_TABLE) -> str | None:
-    """Return the first matching status for *text* using first-match semantics.
+def message_to_status(
+    text: str,
+    table: tuple[tuple[str, str], ...] = STATUS_TABLE,
+    *,
+    previous_status: str | None = None,
+    flag: str = "",
+    scope: str = "",
+) -> str | None:
+    """Map actual race-control evidence; ending notices remain feed-only.
 
-    Case-insensitive match against each needle in *table*.  Returns ``None``
-    when no needle matches.
+    TRACK CLEAR only ends SC/VSC. A track-wide green flag can also confirm a
+    restart; a pit-exit light or sector flag cannot change session status.
     """
     upper = text.upper()
+    if any(notice in upper for notice in (
+        "SAFETY CAR IN THIS LAP", "SC IN THIS LAP", "VIRTUAL SAFETY CAR ENDING", "VSC ENDING",
+    )):
+        return None
     for needle, status in table:
         if needle in upper:
             return status
-    return None
+    if "TRACK CLEAR" in upper:
+        return "started" if previous_status in {"safety_car", "vsc"} else None
+    if flag.upper() == "GREEN" or upper.strip() == "GREEN FLAG":
+        if "PIT EXIT" in upper or scope.upper() not in {"", "TRACK"}:
+            return None
+        return "started"
+    return {
+        "RED": "red_flag",
+        "SAFETY CAR": "safety_car",
+        "VIRTUAL SAFETY CAR": "vsc",
+        "CHEQUERED": "finished",
+    }.get(flag.upper())
 
 
 def fastf1_lap1_start(lap1):

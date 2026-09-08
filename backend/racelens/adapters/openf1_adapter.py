@@ -235,22 +235,6 @@ def _parse_iso(s: str | None) -> float | None:
     return None
 
 
-# ── Flag → session status mapping (shared with fastf1_adapter via _common) ────
-
-_FLAG_MAP = {
-    "RED": "red_flag",
-    "SAFETY CAR": "safety_car",
-    "VIRTUAL SAFETY CAR": "vsc",
-    "GREEN": "started",
-    "CHEQUERED": "finished",
-}
-
-
-def _flag_to_status(flag: str) -> str | None:
-    """Map OpenF1 short flag values (e.g. "CHEQUERED") to session status strings."""
-    return _FLAG_MAP.get(flag.upper())
-
-
 # ── Shared row→Event transform ────────────────────────────────────────────────
 # This is the single source of truth. ingest_openf1() and
 # OpenF1IncrementalIngester both call it with their accumulated row sets.
@@ -540,6 +524,7 @@ def _race_control_to_events(
 ) -> list[Event]:
     """Race control → RaceControlMessage + SessionStatusChanged."""
     events: list[Event] = []
+    last_status: str | None = None
     for row in rc_rows:
         date = _parse_iso(row.get("date"))
         if date is None:
@@ -552,12 +537,13 @@ def _race_control_to_events(
         events.append(mk(sid, "RaceControlMessage", t_ms,
                          category=category, message=message, flag=flag))
 
-        # Try message text first (for descriptive messages), then flag field
-        status: str | None = message_to_status(message)
-        if status is None:
-            status = _flag_to_status(flag)
+        status = message_to_status(
+            message, previous_status=last_status, flag=flag,
+            scope=str(row.get("scope") or ""),
+        )
         if status:
             events.append(mk(sid, "SessionStatusChanged", t_ms, status=status))
+            last_status = status
     return events
 
 

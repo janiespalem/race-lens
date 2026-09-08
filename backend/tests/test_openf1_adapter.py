@@ -109,7 +109,7 @@ _INTERVALS = [
 _EXPECTED_INTERVAL_EMITS = 4
 
 _RACE_CONTROL = [
-    {"date": "2024-05-26T13:00:00.500", "category": "Flag", "message": "GREEN LIGHT - PIT EXIT OPEN", "flag": "GREEN"},
+    {"date": "2024-05-26T13:00:00.500", "category": "Flag", "message": "GREEN FLAG", "flag": "GREEN"},
     {"date": "2024-05-26T13:02:40.000", "category": "Flag", "message": "CHEQUERED FLAG", "flag": "CHEQUERED"},
 ]
 
@@ -588,3 +588,32 @@ def test_later_stint_without_previous_lap_anchor_is_deferred():
     }
     events = _ingest({"/stints": [orphan_stint]})
     assert not [e for e in events if e.type == "TyreStintUpdated"]
+
+
+def test_neutralization_waits_for_actual_green_and_track_clear_does_not_restart_red():
+    messages = [
+        ("SAFETY CAR DEPLOYED", ""),
+        ("SAFETY CAR IN THIS LAP", ""),
+        ("TRACK CLEAR", ""),
+        ("VIRTUAL SAFETY CAR DEPLOYED", ""),
+        ("VSC ENDING", ""),
+        ("GREEN FLAG", "GREEN"),
+        ("RED FLAG", "RED"),
+        ("TRACK CLEAR", "GREEN"),
+        ("GREEN LIGHT - PIT EXIT OPEN", "GREEN"),
+        ("GREEN FLAG", "GREEN"),
+    ]
+    rows = [
+        {"date": f"2024-05-26T13:00:{second:02d}.000", "message": message,
+         "flag": flag, "category": "Flag", "scope": "Track"}
+        for second, (message, flag) in enumerate(messages, 1)
+    ]
+    events = _ingest({"/race_control": list(reversed(rows))})
+    engine = ReplayEngine(events)
+    assert [engine.state_at(second * 1000)["session_status"] for second in range(1, 11)] == [
+        "safety_car", "safety_car", "started", "vsc", "vsc", "started",
+        "red_flag", "red_flag", "red_flag", "started",
+    ]
+    assert [e.payload["message"] for e in events if e.type == "RaceControlMessage"] == [
+        message for message, _ in messages
+    ]
