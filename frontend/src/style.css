@@ -769,6 +769,17 @@ body {
 .catalog-header {
   gap: 16px;
 }
+.catalog-header > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.catalog-lang {
+  flex-shrink: 0;
+}
+.catalog-lang .tog {
+  padding: 6px 12px;
+  font-size: 13px;
+}
 .catalog-header h2 {
   font: italic 800 24px var(--cond);
 }
