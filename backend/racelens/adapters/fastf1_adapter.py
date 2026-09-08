@@ -218,4 +218,6 @@ def _race_control_to_events(messages, sid: str, session_zero, src: str) -> list[
         if status is not None:
             events.append(event(sid, "SessionStatusChanged", t, source=src, status=status))
             last_status = status
+    for sequence, item in enumerate(events):
+        item.ingest_seq = sequence
     return events

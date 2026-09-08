@@ -581,7 +581,8 @@ def _rows_to_events(
     pit_rows = _chronological(pit_rows, "date")
     stint_rows = _chronological(stint_rows, "date_start")
     interval_rows = _chronological(interval_rows, "date")
-    rc_rows = _chronological(rc_rows, "date")
+    # Source order resolves simultaneous flag transitions; JSON ordering cannot.
+    rc_rows = sorted(rc_rows, key=lambda row: _parse_iso(row.get("date")) or 0.0)
 
     events: list[Event] = [mk(sid, "SessionStarted", 0)]
 
