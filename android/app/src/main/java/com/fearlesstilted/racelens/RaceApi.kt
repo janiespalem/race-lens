@@ -28,7 +28,12 @@ data class DriverTiming(
     val sectors: List<SectorTime?> = emptyList(),
 )
 data class SectorTime(val lap: Int?, val timeMs: Int)
-data class Weather(val rainfall: Boolean?, val trackTempC: Double?, val airTempC: Double?)
+data class Weather(
+    val rainfall: Boolean?,
+    val trackTempC: Double?,
+    val airTempC: Double?,
+    val observedAtMs: Map<String, Long> = emptyMap(),
+)
 data class Battle(val driverOneId: String, val driverTwoId: String, val intervalSeconds: Double?)
 data class RaceSnapshot(val atMs: Long, val lap: Int, val status: String, val drivers: List<DriverTiming>, val weather: Weather? = null, val sessionName: String? = null, val battle: Battle? = null)
 data class LiveAvailability(
@@ -141,8 +146,9 @@ class RaceApi(private val origin: String) {
 private fun parseRaceState(json: JSONObject): RaceSnapshot {
     val order = json.optJSONArray("classification") ?: JSONArray()
     val drivers = json.optJSONObject("drivers") ?: JSONObject()
+    val observed = parseWeatherObserved(json.optJSONObject("weather_observed_at_ms"))
     val weather = json.optJSONObject("weather")?.let { value ->
-        Weather(value.opt("rainfall") as? Boolean, value.optNullableDouble("track_temp_c"), value.optNullableDouble("air_temp_c"))
+        Weather(value.opt("rainfall") as? Boolean, value.optNullableDouble("track_temp_c"), value.optNullableDouble("air_temp_c"), observed)
             .takeIf { it.rainfall != null || it.trackTempC != null || it.airTempC != null }
     }
     return RaceSnapshot(
@@ -177,6 +183,16 @@ internal fun parseSectors(items: JSONArray?): List<SectorTime?> =
         } else {
             val timeMs = slot.optInt("time_ms")
             SectorTime(slot.optNullableInt("lap"), timeMs).takeIf { timeMs > 0 }
+        }
+    }
+
+private fun parseWeatherObserved(items: JSONObject?): Map<String, Long> =
+    if (items == null) emptyMap() else buildMap {
+        val keys = items.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val atMs = items.optLong(key)
+            if (atMs > 0) put(key, atMs)
         }
     }
 

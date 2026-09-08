@@ -463,7 +463,7 @@ _RACE_STATE_FIELDS = {
     "status_since_ms", "total_laps", "classification", "drivers",
     "data_quality", "frame_source", "viewbox",
 }
-_RACE_STATE_OPTIONAL_FIELDS = {"restart_at_ms", "weather"}
+_RACE_STATE_OPTIONAL_FIELDS = {"restart_at_ms", "weather", "weather_observed_at_ms"}
 _WEATHER_FIELDS = set(WEATHER_BOUNDS) | {"rainfall"}
 _DRIVER_FIELDS = {
     "position", "rank", "grid_position", "laps_completed", "last_lap_ms",
@@ -668,6 +668,15 @@ def _validate_race_state(value: object, replay_session_id: str) -> None:
                     "rainfall" in weather
                     and not isinstance(weather["rainfall"], bool)
                 )
+            )
+        )
+        or (
+            (weather_observed := value.get("weather_observed_at_ms")) is not None
+            and (
+                not isinstance(weather_observed, dict)
+                or not set(weather_observed) <= _WEATHER_FIELDS
+                or any(not _integer(item) for item in weather_observed.values())
+                or (weather is None and bool(weather_observed))
             )
         )
     ):

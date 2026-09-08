@@ -1355,3 +1355,33 @@ def test_live_records_accept_and_validate_driver_sectors():
     legacy = copy.deepcopy(snapshot)
     legacy["race_state"]["drivers"]["VER"].pop("sectors", None)
     assert storage.validate_live_snapshot(legacy, pointer=pointer, now=NOW) == legacy
+
+
+def test_live_records_accept_and_validate_weather_observation_times():
+    pointer, snapshot = _valid_records()
+    snapshot["race_state"]["weather"] = {"air_temp_c": 18.7, "rainfall": False}
+    snapshot["race_state"]["weather_observed_at_ms"] = {
+        "air_temp_c": 1_000,
+        "rainfall": 1_000,
+    }
+    assert storage.validate_live_snapshot(snapshot, pointer=pointer, now=NOW) == snapshot
+
+    bad_value = copy.deepcopy(snapshot)
+    bad_value["race_state"]["weather_observed_at_ms"]["air_temp_c"] = "soon"
+    with pytest.raises(storage.LiveRecordError, match="race state"):
+        storage.validate_live_snapshot(bad_value, pointer=pointer, now=NOW)
+
+    unknown_key = copy.deepcopy(snapshot)
+    unknown_key["race_state"]["weather_observed_at_ms"] = {"gust_mps": 4}
+    with pytest.raises(storage.LiveRecordError, match="race state"):
+        storage.validate_live_snapshot(unknown_key, pointer=pointer, now=NOW)
+
+    orphaned = copy.deepcopy(snapshot)
+    orphaned["race_state"]["weather"] = None
+    with pytest.raises(storage.LiveRecordError, match="race state"):
+        storage.validate_live_snapshot(orphaned, pointer=pointer, now=NOW)
+
+    # Snapshots published before observation timestamps stay valid.
+    legacy = copy.deepcopy(snapshot)
+    del legacy["race_state"]["weather_observed_at_ms"]
+    assert storage.validate_live_snapshot(legacy, pointer=pointer, now=NOW) == legacy

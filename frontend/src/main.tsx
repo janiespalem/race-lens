@@ -545,6 +545,8 @@ function App() {
           currentLap={currentLap}
           totalLaps={state?.total_laps ?? null}
           weather={state?.weather}
+          weatherObservedAtMs={state?.weather_observed_at_ms}
+          atMs={replay.atMs}
           onSelectDriver={handleSelectDriver}
           onSelectBattle={(ids) => handleWidgetAction('battle', ids)}
         />
@@ -832,6 +834,8 @@ function App() {
                   currentLap={currentLap}
                   totalLaps={state?.total_laps ?? null}
                   weather={state?.weather}
+                  weatherObservedAtMs={state?.weather_observed_at_ms}
+                  atMs={replay.atMs}
                   onSelectDriver={handleSelectDriver}
                   onSelectBattle={(ids) => handleWidgetAction('battle', ids)}
                 />

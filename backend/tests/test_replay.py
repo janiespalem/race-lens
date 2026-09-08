@@ -290,14 +290,26 @@ def test_weather_state_follows_replay_time_and_merges_source_patches():
     engine = ReplayEngine(events)
 
     assert engine.state_at(999)["weather"] is None
+    assert engine.state_at(999)["weather_observed_at_ms"] == {}
     assert engine.state_at(1_000)["weather"] == {
         "air_temp_c": 18.7,
         "rainfall": False,
+    }
+    assert engine.state_at(1_000)["weather_observed_at_ms"] == {
+        "air_temp_c": 1_000,
+        "rainfall": 1_000,
     }
     assert engine.state_at(2_000)["weather"] == {
         "air_temp_c": 18.7,
         "rainfall": False,
         "track_temp_c": 32.9,
+    }
+    # A patch re-stamps only the fields it carried: earlier fields keep the
+    # time the source actually reported them.
+    assert engine.state_at(2_000)["weather_observed_at_ms"] == {
+        "air_temp_c": 1_000,
+        "rainfall": 1_000,
+        "track_temp_c": 2_000,
     }
 
 

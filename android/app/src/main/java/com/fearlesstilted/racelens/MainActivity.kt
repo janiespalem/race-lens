@@ -246,16 +246,19 @@ private fun SessionTitle(state: ScreenState) = Column(verticalArrangement = Arra
     Text(if (state.frame.target.mode == WatchMode.LIVE) "LIVE SESSION" else "RACE REPLAY", color = Signal, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Black, fontSize = 11.sp, letterSpacing = 1.2.sp)
     Text(state.frame.snapshot?.sessionName ?: shortName(state.frame.target.sessionId), color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Black, maxLines = 2)
     Text("LAP ${state.frame.snapshot?.lap ?: "—"}  /  ${state.frame.snapshot?.status?.uppercase() ?: "WAITING"}  /  ${formatTime(state.frame.snapshot?.atMs ?: state.frame.target.replayMs ?: 0)}", color = Dim, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-    state.frame.snapshot?.weather?.let { weather -> Conditions(weather) }
+    state.frame.snapshot?.weather?.let { weather -> Conditions(weather, state.frame.snapshot?.atMs ?: 0) }
 }
 
 @Composable
-private fun Conditions(weather: Weather) = Column(
+private fun Conditions(weather: Weather, atMs: Long) = Column(
     modifier = Modifier.fillMaxWidth().background(Steel).padding(horizontal = 10.dp, vertical = 8.dp),
     verticalArrangement = Arrangement.spacedBy(2.dp),
 ) {
     Text("CONDITIONS", color = Acid, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Black, fontSize = 9.sp)
     Text(conditionsSummary(weather), color = Paper, fontFamily = FontFamily.Monospace, fontSize = 10.sp, maxLines = 2)
+    weatherAgeLabel(weather, atMs)?.let { label ->
+        Text(label, color = if (label.startsWith("WEATHER STALE")) Signal else Dim, fontFamily = FontFamily.Monospace, fontSize = 9.sp, maxLines = 1)
+    }
 }
 
 @Composable

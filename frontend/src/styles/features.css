@@ -623,6 +623,15 @@
 }
 .bi-card-head b { color: var(--dim); }
 .bi-card-head span { color: #39c463; text-align: right; }
+.bi-weather-age {
+  margin-left: 6px;
+  font: 600 10px var(--cond);
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+.bi-weather-age.stale {
+  color: var(--amber);
+}
 .bi-flow-list {
   display: flex;
   flex-direction: column;

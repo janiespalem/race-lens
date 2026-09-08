@@ -122,6 +122,10 @@ class ReplayEngine:
             "restart_at_ms": None,
             "total_laps": None,
             "weather": None,
+            # Per-field source observation time (session ms). Only fields present
+            # in a WeatherUpdated payload get (re)stamped — a fresh frame never
+            # refreshes values the source has not re-reported.
+            "weather_observed_at_ms": {},
             "classification": [],
             "drivers": {},
             "data_quality": {
@@ -305,6 +309,9 @@ class ReplayEngine:
 
         elif e.type == "WeatherUpdated":
             state["weather"] = {**(state["weather"] or {}), **p}
+            observed = state["weather_observed_at_ms"]
+            for key in p:
+                observed[key] = e.session_time_ms
 
         elif e.type == "RaceControlMessage":
             restart_at_ms = p.get("restart_at_ms")

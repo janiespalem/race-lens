@@ -3,7 +3,7 @@ import type { Battle, DriverState, WeatherState } from '../../api/types'
 import { battleGap, battlePair } from '../../lib/battles'
 import { formatLapTime } from '../../lib/format'
 import { compoundLabel } from '../../lib/stints'
-import { formatWeather } from '../../lib/weather'
+import { formatWeather, formatWeatherAge } from '../../lib/weather'
 import { teamColor } from './teamColors'
 
 type DriverRow = { id: string } & DriverState
@@ -15,6 +15,8 @@ type Props = {
   currentLap: number
   totalLaps: number | null
   weather?: WeatherState | null
+  weatherObservedAtMs?: Record<string, number>
+  atMs: number
   onSelectDriver: (id: string) => void
   onSelectBattle: (ids: string[]) => void
 }
@@ -34,6 +36,8 @@ export function BattleIntelligence({
   currentLap,
   totalLaps,
   weather,
+  weatherObservedAtMs,
+  atMs,
   onSelectDriver,
   onSelectBattle,
 }: Props) {
@@ -51,6 +55,7 @@ export function BattleIntelligence({
     .slice(0, 7), [rows])
   const fastestPace = pace[0]?.average
   const weatherSummary = formatWeather(weather, lang)
+  const weatherAge = formatWeatherAge(weather, weatherObservedAtMs, atMs, lang)
 
   return (
     <section className="battle-intelligence" aria-label={lang === 'ru' ? 'Анализ борьбы' : 'Battle intelligence'}>
@@ -99,7 +104,12 @@ export function BattleIntelligence({
         <article className="bi-card bi-state">
           <div className="bi-card-head">
             <b>{lang === 'ru' ? 'ГОНКА' : 'RACE'}</b>
-            {weatherSummary && <span>{weatherSummary}</span>}
+            {weatherSummary && (
+              <span>
+                {weatherSummary}
+                {weatherAge && <small className={`bi-weather-age${weatherAge.startsWith(lang === 'ru' ? 'УСТАРЕЛО' : 'STALE') ? ' stale' : ''}`}>{weatherAge}</small>}
+              </span>
+            )}
           </div>
           <div className="bi-lap">
             {currentLap || '—'} <small>/ {totalLaps ?? '—'} {lang === 'ru' ? 'КР.' : 'LAPS'}</small>
