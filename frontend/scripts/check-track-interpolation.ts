@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { hasFinishedRace, lastKnownFrame, progressPathPosition, resolveTrackPosition } from '../src/lib/trackInterpolation.ts'
+import { hasFinishedRace, lastKnownFrame, progressPathPosition, resolveTrackPosition, sectorBoundaryMarkers } from '../src/lib/trackInterpolation.ts'
 import { isRetryableLiveTrackError, isRetryablePositionsError } from '../src/lib/liveTrack.ts'
 
 assert.equal(isRetryableLiveTrackError(new Error('404 Track data is not ready')), true)
@@ -18,6 +18,22 @@ assert.equal(hasFinishedRace(69, 70), false)
 assert.equal(hasFinishedRace(70, null), false)
 
 const square: [number, number][] = [[0, 0], [10, 0], [10, 10], [0, 10]]
+
+assert.deepEqual(sectorBoundaryMarkers(square, [
+  { sector: 1, progress: 0.25 }, { sector: 2, progress: 0.625 },
+]), [
+  { sector: 1, position: [10, 0] },
+  { sector: 2, position: [5, 10] },
+  { sector: 3, position: [0, 0] },
+])
+assert.deepEqual(sectorBoundaryMarkers(square, undefined), [])
+assert.deepEqual(sectorBoundaryMarkers(undefined, [{ sector: 1, progress: 0.2 }]), [])
+assert.deepEqual(sectorBoundaryMarkers(square, [
+  { sector: 1, progress: 0.7 }, { sector: 2, progress: 0.2 },
+]), [])
+assert.deepEqual(sectorBoundaryMarkers(square, [
+  { sector: 1, progress: Number.NaN }, { sector: 2, progress: 0.7 },
+]), [])
 
 const midpoint = progressPathPosition([0.1, 0.2], square, 0.5)
 assert(midpoint)

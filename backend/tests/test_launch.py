@@ -3,6 +3,31 @@ import json
 import sys
 from types import SimpleNamespace
 
+import pytest
+
+
+def test_sector_boundaries_follow_source_times_not_equal_track_thirds():
+    from racelens.positions.track import sector_boundaries
+
+    assert sector_boundaries(
+        [125, 170], [100, 150, 200], [0, 0.4, 1],
+    ) == [{"sector": 1, "progress": 0.2}, {"sector": 2, "progress": 0.64}]
+
+
+@pytest.mark.parametrize("ends,times,progress", [
+    ([float("nan"), 170], [100, 150, 200], [0, 0.4, 1]),
+    ([90, 170], [100, 150, 200], [0, 0.4, 1]),
+    ([125, 210], [100, 150, 200], [0, 0.4, 1]),
+    ([170, 125], [100, 150, 200], [0, 0.4, 1]),
+    ([125, 170], [100, 100, 200], [0, 0.4, 1]),
+    ([125, 170], [100, 150, 200], [0, 0.4, float("inf")]),
+    ([125, 170], [100, 150, 200], [0, 0.4, 0.3]),
+])
+def test_sector_boundaries_reject_missing_or_unusable_source(ends, times, progress):
+    from racelens.positions.track import sector_boundaries
+
+    assert sector_boundaries(ends, times, progress) == []
+
 
 def test_progress_path_is_indexed_by_relative_distance():
     from racelens.positions.track import progress_path

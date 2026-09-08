@@ -68,6 +68,8 @@ export type TrackData = {
   viewbox: [number, number]
   points: [number, number][]
   progress_points?: [number, number][]
+  /** End of timing sectors 1/2 on progress_points; sector 3 ends at start/finish. */
+  sector_boundaries?: { sector: number; progress: number }[]
   corners?: TrackCorner[]
 }
 

@@ -7,6 +7,7 @@ export_raw_positions: per-driver raw X/Y rows as JSONL for the Rust resampler.
 from __future__ import annotations
 
 from bisect import bisect_right
+from collections.abc import Iterable
 import json
 import sys
 from math import isfinite
@@ -80,6 +81,41 @@ def progress_path(
             round(height - (offset_y + (y - y_min) * scale), 1),
         ])
     return points
+
+
+def sector_boundaries(
+    sector_ends: Iterable[float],
+    telemetry_time: Iterable[float],
+    telemetry_progress: Iterable[float],
+) -> list[dict[str, int | float]]:
+    """Map timing-sector ends onto the same lap's progress, never equal thirds.
+
+    Times are session seconds. Missing/out-of-range or non-monotonic source
+    data yields no markers rather than extrapolated timing lines.
+    """
+    ends = list(sector_ends)
+    times = list(telemetry_time)
+    progress = list(telemetry_progress)
+    if len(ends) != 2 or len(times) < 2 or len(times) != len(progress):
+        return []
+    if not all(isfinite(value) for value in ends + times + progress):
+        return []
+    if not times[0] < ends[0] < ends[1] < times[-1]:
+        return []
+    if any(b <= a for a, b in zip(times, times[1:])):
+        return []
+    if any(b < a for a, b in zip(progress, progress[1:])):
+        return []
+    markers = []
+    for sector, end in enumerate(ends, 1):
+        after = bisect_right(times, end)
+        ratio = (end - times[after - 1]) / (times[after] - times[after - 1])
+        distance = progress[after - 1] + ratio * (progress[after] - progress[after - 1])
+        distance = round(float(distance), 6)
+        if not 0 < distance < 1:
+            return []
+        markers.append({"sector": sector, "progress": distance})
+    return markers if markers[0]["progress"] < markers[1]["progress"] else []
 
 
 def _load_session(year: int, gp: str, session: str):
@@ -206,6 +242,14 @@ def build_track_outline(year: int, gp: str, session: str, session_id: str) -> di
         "padding": PAD,
         "points": points,
         "progress_points": progress_points,
+        "sector_boundaries": sector_boundaries(
+            [
+                stamp.total_seconds() if hasattr(stamp, "total_seconds") else float("nan")
+                for stamp in (lap.get("Sector1SessionTime"), lap.get("Sector2SessionTime"))
+            ],
+            telemetry_time,
+            telemetry_progress,
+        ),
         "corners": corners,
     }
 
