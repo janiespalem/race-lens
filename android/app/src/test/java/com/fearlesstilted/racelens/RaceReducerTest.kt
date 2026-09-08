@@ -5,8 +5,69 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 class RaceReducerTest {
+    @Test
+    fun repeatedPendingSeekKeepsItsOwnerButFailedOrInterruptedSeekCanRetry() {
+        val target = WatchTarget(1, WatchMode.REPLAY, "spa_2026_race", 12_000, emptyList())
+        val frame = WatchFrame(target, snapshot = RaceSnapshot(1_000, 1, "green", emptyList()), freshness = Freshness.STALE)
+
+        assertTrue(canKeepWatchTarget(frame, target, requestActive = true, loading = true, hasError = false))
+        // Keeping this request preserves the generation for both success and error completion.
+        assertTrue(acceptsReplayCompletion(2, 2, target, frame.target))
+        assertFalse(canKeepWatchTarget(frame, target, requestActive = false, loading = true, hasError = false))
+        assertFalse(canKeepWatchTarget(frame, target, requestActive = false, loading = false, hasError = true))
+        assertFalse(acceptsReplayCompletion(2, 3, target, target))
+        assertFalse(acceptsReplayCompletion(2, 2, target, target.copy(replayMs = 24_000)))
+        assertFalse(acceptsReplayCompletion(2, 2, target, target.copy(sessionId = "monza_2026_race")))
+    }
+
+    @Test
+    fun foregroundDiscoveryRepeatsSeriallyAndStopsWhenCancelled() = runBlocking {
+        val started = Channel<Int>(Channel.UNLIMITED)
+        val releaseFirst = CompletableDeferred<Unit>()
+        var requests = 0
+        var active = 0
+        var maxActive = 0
+        var available = false
+        val job = launch {
+            refreshWhileActive(20) {
+                launch {
+                    active++
+                    maxActive = maxOf(maxActive, active)
+                    requests++
+                    started.send(requests)
+                    try {
+                        if (requests == 1) releaseFirst.await()
+                        available = requests > 1
+                    } finally { active-- }
+                }
+            }
+        }
+        try {
+            assertEquals(1, withTimeout(2_000) { started.receive() })
+            delay(60)
+            assertEquals(1, requests)
+            assertFalse(available)
+            releaseFirst.complete(Unit)
+            assertEquals(2, withTimeout(2_000) { started.receive() })
+            assertTrue(available)
+            assertEquals(1, maxActive)
+            job.cancelAndJoin()
+            val stoppedAt = requests
+            delay(60)
+            assertEquals(stoppedAt, requests)
+            assertEquals(0, active)
+        } finally { job.cancelAndJoin() }
+    }
+
     @Test
     fun appLinkParsesOneShotReplayHandoff() {
         val target = parseWatchLink(

@@ -2,6 +2,10 @@ package com.fearlesstilted.racelens
 
 import java.net.URI
 import kotlin.math.abs
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 private val sessionIdPattern = Regex("^[a-z0-9][a-z0-9_-]{0,79}$")
 private val driverIdPattern = Regex("^[A-Z0-9]{2,5}$")
@@ -58,6 +62,19 @@ fun acceptsReplayCompletion(generation: Long, currentGeneration: Long, requested
     generation == currentGeneration && requested.replayIdentity() == current.replayIdentity() && current.mode == WatchMode.REPLAY
 
 fun shouldResumeReplay(requestActive: Boolean, loading: Boolean) = !requestActive && loading
+
+internal fun canKeepWatchTarget(frame: WatchFrame, next: WatchTarget, requestActive: Boolean, loading: Boolean, hasError: Boolean) =
+    next == frame.target && (
+        (loading && requestActive) ||
+            (!loading && !hasError && frame.snapshot != null && frame.freshness == Freshness.FRESH)
+        )
+
+internal suspend fun refreshWhileActive(intervalMs: Long, refresh: suspend CoroutineScope.() -> Unit) = coroutineScope {
+    while (isActive) {
+        coroutineScope(refresh)
+        delay(intervalMs)
+    }
+}
 
 fun normalizeReplaySpeed(speed: Int) = speed.takeIf { it in setOf(1, 5, 10) } ?: 1
 

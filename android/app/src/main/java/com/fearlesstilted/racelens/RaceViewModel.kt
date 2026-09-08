@@ -46,26 +46,32 @@ class RaceViewModel : ViewModel() {
     init { refresh() }
 
     fun refresh() {
-        if (refreshJob?.isActive == true) return
+        // A cancelled request can still be finishing blocking IO; wait for completion.
+        if (!foreground || refreshJob?.isCompleted == false) return
         refreshJob = viewModelScope.launch {
-            if (state.frame.target.sessionId.isBlank()) state = state.copy(loading = true, message = null)
-            val api = RaceApi(origin)
-            val sessions = async(Dispatchers.IO) { runCatching { api.sessions() } }
-            val live = async(Dispatchers.IO) { runCatching { api.liveStatus() } }
-            launch {
-                val loadedSessions = sessions.await()
-                state = state.copy(sessions = loadedSessions.getOrElse { state.sessions })
-                if (state.frame.target.sessionId.isBlank()) {
-                    recommendedReplayId(state.sessions)?.let(::chooseReplay) ?: run {
-                        state = state.copy(loading = false, message = loadedSessions.exceptionOrNull()?.let { "Replay catalog unavailable" })
+            refreshWhileActive(30_000) {
+                if (state.frame.target.sessionId.isBlank()) state = state.copy(loading = true, message = null)
+                val api = RaceApi(origin)
+                val sessions = async(Dispatchers.IO) { runCatching { api.sessions() } }
+                val live = async(Dispatchers.IO) { runCatching { api.liveStatus() } }
+                launch {
+                    val loadedSessions = sessions.await()
+                    state = state.copy(sessions = loadedSessions.getOrElse { state.sessions })
+                    if (state.frame.target.sessionId.isBlank()) {
+                        recommendedReplayId(state.sessions)?.let(::chooseReplay) ?: run {
+                            state = state.copy(loading = false, message = loadedSessions.exceptionOrNull()?.let { "Replay catalog unavailable" })
+                        }
                     }
                 }
+                launch {
+                    val loadedLive = live.await()
+                    state = state.copy(live = loadedLive.getOrElse { LiveAvailability(false, "Live status unavailable", null) })
+                    if (foreground && state.frame.target.mode == WatchMode.LIVE && state.live.available) startLiveStream()
+                }
             }
-            launch {
-                val loadedLive = live.await()
-                state = state.copy(live = loadedLive.getOrElse { LiveAvailability(false, "Live status unavailable", null) })
-                if (foreground && state.frame.target.mode == WatchMode.LIVE && state.live.available) startLiveStream()
-            }
+        }
+        refreshJob?.invokeOnCompletion {
+            viewModelScope.launch { if (foreground) refresh() }
         }
     }
 
@@ -74,7 +80,7 @@ class RaceViewModel : ViewModel() {
     fun seek(atMs: Long) {
         val target = state.frame.target
         if (target.mode == WatchMode.REPLAY) {
-            pauseReplay()
+            if (state.replayPlaying) pauseReplay()
             navigate(target.copy(replayMs = atMs))
         }
     }
@@ -142,7 +148,6 @@ class RaceViewModel : ViewModel() {
         foreground = false
         state = state.copy(replayPlaying = false)
         refreshJob?.cancel()
-        refreshJob = null
         liveGeneration++
         cancelActiveStream()
         replayGeneration++
@@ -154,7 +159,7 @@ class RaceViewModel : ViewModel() {
 
     private fun navigate(target: WatchTarget) {
         val next = target.normalized()
-        if (next == state.frame.target && state.frame.snapshot != null) return
+        if (canKeepWatchTarget(state.frame, next, replayJob?.isActive == true, state.loading, state.message != null)) return
         liveGeneration++
         cancelActiveStream()
         replayGeneration++
