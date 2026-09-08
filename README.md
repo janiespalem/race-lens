@@ -14,6 +14,11 @@ broadcast desk, part strategy rabbit hole. Pick a session, scrub to any moment,
 and inspect timing, battles, tyres, radio, incidents, and the calls that shaped
 the race.
 
+[![Race Lens walkthrough: replay the race, focus on a driver, and scrub to another moment](docs/media/race-lens-preview.gif)](docs/media/race-lens-demo.mp4)
+
+**22-second walkthrough:** replay → driver focus → timeline scrubbing.
+[Watch the MP4](docs/media/race-lens-demo.mp4) · [Try it yourself](https://race-lens.onrender.com/?session=hungarian_2026_race)
+
 Under the hood it stays deliberately deterministic: the same event timeline at
 the same timestamp always produces the same race state. That makes the fun UI
 inspectable instead of magical.
