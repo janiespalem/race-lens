@@ -178,20 +178,7 @@ def session_to_events(ses, sid: str, src: str = "fastf1") -> list[Event]:
     # status changes so the UI can show RED FLAG / SC / VSC instead of silence
     if ses.race_control_messages is not None:
         session_zero = pd.Timestamp(ses.date) - pd.Timedelta(ses.session_start_time)
-        for _, msg in ses.race_control_messages.iterrows():
-            t = _timestamp_to_session_ms(msg.get("Time"), session_zero) if "Time" in msg else None
-            if t is None or t < 0:
-                continue
-            text = str(msg.get("Message", ""))
-            events.append(
-                event(sid, "RaceControlMessage", t, source=src,
-                      category=str(msg.get("Category", "")), message=text)
-            )
-            status = message_to_status(text)
-            if status is not None:
-                events.append(
-                    event(sid, "SessionStatusChanged", t, source=src, status=status)
-                )
+        events.extend(_race_control_to_events(ses.race_control_messages, sid, session_zero, src))
 
     # Rebase to race start: FastF1 session time begins with the data feed,
     # ~1.5h before lights out. LapTime can be missing on lap 1, while
@@ -206,4 +193,29 @@ def session_to_events(ses, sid: str, src: str = "fastf1") -> list[Event]:
             )
 
     events.sort(key=lambda e: (e.session_time_ms, e.event_id))
+    return events
+
+
+def _race_control_to_events(messages, sid: str, session_zero, src: str) -> list[Event]:
+    """Normalize messages in source-time order so TRACK CLEAR has prior status."""
+    events: list[Event] = []
+    last_status: str | None = None
+    timed_messages = []
+    for _, msg in messages.iterrows():
+        t = _timestamp_to_session_ms(msg.get("Time"), session_zero)
+        if t is not None and t >= 0:
+            timed_messages.append((t, msg))
+    for t, msg in sorted(timed_messages, key=lambda item: item[0]):
+        text = str(msg.get("Message", ""))
+        events.append(
+            event(sid, "RaceControlMessage", t, source=src,
+                  category=str(msg.get("Category", "")), message=text)
+        )
+        status = message_to_status(
+            text, previous_status=last_status,
+            flag=str(msg.get("Flag", "")), scope=str(msg.get("Scope", "")),
+        )
+        if status is not None:
+            events.append(event(sid, "SessionStatusChanged", t, source=src, status=status))
+            last_status = status
     return events

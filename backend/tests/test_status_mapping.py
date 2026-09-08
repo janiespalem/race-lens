@@ -38,7 +38,7 @@ def test_vsc_message():
 
 def test_abbreviated_vsc_messages():
     assert message_to_status("VSC DEPLOYED") == "vsc"
-    assert message_to_status("VSC ENDING") == "started"
+    assert message_to_status("VSC ENDING") is None
 
 
 def test_sc_deployed():
@@ -53,24 +53,22 @@ def test_track_clear_does_not_resume_a_red_flag():
     assert message_to_status("TRACK CLEAR") is None
 
 
+def test_local_green_flag_is_not_session_green():
+    assert message_to_status("GREEN FLAG", flag="GREEN", scope="Sector") is None
+    assert message_to_status("GREEN LIGHT - PIT EXIT OPEN", flag="GREEN") is None
+
+
 def test_unknown_message_returns_none():
     assert message_to_status("DEBRIS ON TRACK") is None
 
 
-def test_sc_in_this_lap_gives_started():
-    """Miami 2026: 'SAFETY CAR IN THIS LAP' means the SC is withdrawing — race resumes."""
-    assert message_to_status("SAFETY CAR IN THIS LAP") == "started"
+def test_sc_in_this_lap_is_only_a_notice():
+    assert message_to_status("SAFETY CAR IN THIS LAP") is None
+    assert message_to_status("SC IN THIS LAP") is None
 
 
-def test_vsc_ending_gives_started():
-    """'VIRTUAL SAFETY CAR ENDING' signals VSC withdrawal — race is about to resume."""
-    assert message_to_status("VIRTUAL SAFETY CAR ENDING") == "started"
-
-
-def test_sc_deployed_not_sc_in_this_lap():
-    """'SAFETY CAR IN THIS LAP' must resolve before 'SAFETY CAR DEPLOYED' (substring check)."""
-    assert message_to_status("SAFETY CAR IN THIS LAP") == "started"
-    assert message_to_status("SAFETY CAR DEPLOYED") == "safety_car"
+def test_vsc_ending_is_only_a_notice():
+    assert message_to_status("VIRTUAL SAFETY CAR ENDING") is None
 
 
 def test_status_table_chequered_before_red_flag():
@@ -140,3 +138,35 @@ def test_lap_null_duration_does_not_crash():
     )
     # t_end should be date_start rebased to session ms (non-negative)
     assert lc.session_time_ms >= 0
+
+
+def test_direct_live_keeps_its_source_backed_restart_contract(tmp_path):
+    from racelens.adapters.f1live_adapter import ingest_f1live
+    from racelens.replay.engine import ReplayEngine
+
+    messages = [
+        "SAFETY CAR DEPLOYED", "SAFETY CAR IN THIS LAP", "TRACK CLEAR",
+        "VSC DEPLOYED", "VSC ENDING", "TRACK CLEAR", "RED FLAG", "TRACK CLEAR",
+    ]
+    rows = [["SessionStatus", {"Status": "Started"}, "2026-09-06T13:00:00Z"]]
+    for second, message in enumerate(messages, 1):
+        utc = f"2026-09-06T13:00:{second:02d}Z"
+        rows.append(["RaceControlMessages", {"Messages": [
+            {"Utc": utc, "Category": "Flag", "Message": message},
+        ]}, utc])
+    rows.extend([
+        ["SessionStatus", {"Status": "Started"}, "2026-09-06T13:00:09Z"],
+        ["RaceControlMessages", {"Messages": [{"Utc": "2026-09-06T13:00:10Z",
+          "Message": "STANDING START"}]}, "2026-09-06T13:00:10Z"],
+    ])
+    feed = tmp_path / "status.txt"
+    feed.write_text("\n".join(map(repr, rows)) + "\n", encoding="utf-8")
+    events = ingest_f1live(str(feed))
+    engine = ReplayEngine(events)
+    assert [engine.state_at(second * 1000)["session_status"] for second in range(1, 11)] == [
+        "safety_car", "safety_car", "started", "vsc", "vsc", "started",
+        "red_flag", "red_flag", "formation", "started",
+    ]
+    assert [e.payload["message"] for e in events if e.type == "RaceControlMessage"] == [
+        *messages, "STANDING START",
+    ]

@@ -64,3 +64,42 @@ def test_practice_positions_follow_each_drivers_best_lap():
 
     state = ReplayEngine(events).state_at(130)
     assert state["classification"] == ["VER", "ANT"]
+
+
+def test_race_control_waits_for_actual_green_and_preserves_red_flag(monkeypatch):
+    import racelens.adapters.fastf1_adapter as adapter
+
+    messages = [
+        ("SAFETY CAR DEPLOYED", ""),
+        ("SC IN THIS LAP", ""),
+        ("TRACK CLEAR", ""),
+        ("VIRTUAL SAFETY CAR DEPLOYED", ""),
+        ("VIRTUAL SAFETY CAR ENDING", "GREEN"),
+        ("GREEN FLAG", "GREEN"),
+        ("RED FLAG", "RED"),
+        ("TRACK CLEAR", "GREEN"),
+        ("GREEN LIGHT - PIT EXIT OPEN", "GREEN"),
+        ("GREEN FLAG", "GREEN"),
+    ]
+
+    class Rows(list):
+        def iterrows(self):
+            return enumerate(self)
+
+    rows = Rows(
+        {"Time": second * 1000, "Message": message, "Flag": flag,
+         "Category": "Flag", "Scope": "Track"}
+        for second, (message, flag) in enumerate(messages, 1)
+    )
+    rows.reverse()
+    # This focused conversion check needs no optional pandas/FastF1 install.
+    monkeypatch.setattr(adapter, "_timestamp_to_session_ms", lambda time, _: time)
+    events = adapter._race_control_to_events(rows, "race", None, "fastf1")
+    engine = ReplayEngine(events)
+    assert [engine.state_at(second * 1000)["session_status"] for second in range(1, 11)] == [
+        "safety_car", "safety_car", "started", "vsc", "vsc", "started",
+        "red_flag", "red_flag", "red_flag", "started",
+    ]
+    assert [e.payload["message"] for e in events if e.type == "RaceControlMessage"] == [
+        message for message, _ in messages
+    ]
