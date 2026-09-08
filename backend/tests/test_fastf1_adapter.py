@@ -218,3 +218,29 @@ def test_lap_sector_events_never_invent_a_timestamp_or_a_zero():
         sector_times=[27_795, 32_161, 19_000],
         sector_session_times=[None, 140_000, 150_000],
     )] == [2, 3]
+
+
+def test_sector_extraction_does_not_depend_on_lap_completion():
+    from racelens.adapters.fastf1_adapter import _lap_sector_events_from_row
+
+    # In-progress lap: no completion `Time` yet, but S1 already crossed.
+    row = {
+        "Driver": "VER",
+        "LapNumber": 5,
+        "Time": None,
+        "Sector1Time": 27_795,
+        "Sector1SessionTime": 118_000,
+        "Sector2Time": None,
+        "Sector2SessionTime": None,
+        "Sector3Time": None,
+        "Sector3SessionTime": None,
+    }
+    events = _lap_sector_events_from_row("race", row, "fastf1", ms=lambda value: value)
+    assert [
+        (e.lap, e.payload["sector"], e.payload["time_ms"], e.session_time_ms)
+        for e in events
+    ] == [(5, 1, 27_795, 118_000)]
+
+    # Legacy rows without sector columns degrade to no sector events.
+    legacy = {"Driver": "VER", "LapNumber": 5, "Time": None}
+    assert _lap_sector_events_from_row("race", legacy, "fastf1", ms=lambda value: value) == []

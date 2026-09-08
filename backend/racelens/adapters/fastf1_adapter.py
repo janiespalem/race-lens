@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any, Callable
 
 from racelens.adapters._common import fastf1_lap1_start, message_to_status
 from racelens.events.models import Event, event, make_event_id
@@ -31,6 +32,25 @@ def _timestamp_to_session_ms(ts, session_zero) -> int | None:
     if ts is None or pd.isna(ts):
         return None
     return _ms(pd.Timestamp(ts) - session_zero)
+
+
+def _lap_sector_events_from_row(
+    sid: str, row, src: str, ms: Callable[[Any], int | None] = _ms,
+) -> list[Event]:
+    """Sector observations from one laps row — valid for an incomplete lap.
+
+    The in-progress lap row can already carry S1/S2 while its `Time` (lap end)
+    is still absent; extraction must not depend on lap completion.
+    """
+    try:
+        sector_times = [ms(row[f"Sector{i}Time"]) for i in (1, 2, 3)]
+        sector_session_times = [ms(row[f"Sector{i}SessionTime"]) for i in (1, 2, 3)]
+    except KeyError:
+        return []  # legacy archive without sector columns
+    return _lap_sector_events(
+        sid, str(row["Driver"]), int(row["LapNumber"]), src,
+        sector_times, sector_session_times,
+    )
 
 
 def _lap_sector_events(
@@ -135,6 +155,11 @@ def session_to_events(ses, sid: str, src: str = "fastf1") -> list[Event]:
         drv = str(lap["Driver"])
         lap_no = int(lap["LapNumber"])
         t_end = _ms(lap["Time"])  # session time when the lap was completed
+
+        # Sector observations exist independently of lap completion: the
+        # in-progress lap row can carry S1/S2 before `Time` appears.
+        events.extend(_lap_sector_events_from_row(sid, lap, src))
+
         if t_end is None:
             continue
 
@@ -151,18 +176,6 @@ def session_to_events(ses, sid: str, src: str = "fastf1") -> list[Event]:
                       position=pos)
             )
             by_lap.setdefault(lap_no, []).append((pos, t_end, drv))
-
-        # Source-backed sector observations, each anchored at its own session
-        # timestamp — never reported early at the lap end.
-        try:
-            sector_times = [_ms(lap[f"Sector{i}Time"]) for i in (1, 2, 3)]
-            sector_session_times = [_ms(lap[f"Sector{i}SessionTime"]) for i in (1, 2, 3)]
-        except KeyError:
-            pass  # legacy archive without sector columns — laps alone still replay
-        else:
-            events.extend(
-                _lap_sector_events(sid, drv, lap_no, src, sector_times, sector_session_times)
-            )
 
         t_pit_in = _ms(lap["PitInTime"])
         if t_pit_in is not None:

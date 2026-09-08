@@ -297,7 +297,10 @@ private fun SectorLine(driver: DriverTiming) {
         if (sector == null) "S${index + 1} —" else "S${index + 1} ${formatSector(sector.timeMs)} L${sector.lap ?: "?"}"
     }
     if (parts.all { it.endsWith("—") }) return
-    Text(parts.joinToString("  "), color = Paper, fontFamily = FontFamily.Monospace, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    // FocusArea sits on a light Paper panel: use a dark ink tone, not Paper.
+    // Two lines and natural wrapping keep all three sectors visible even in
+    // the half-width H2H columns.
+    Text(parts.joinToString("  "), color = Steel, fontFamily = FontFamily.Monospace, fontSize = 10.sp, maxLines = 2)
 }
 
 @Composable
