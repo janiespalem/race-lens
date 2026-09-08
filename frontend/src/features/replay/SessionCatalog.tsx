@@ -8,6 +8,7 @@ import { recommendedReplay } from '../../lib/recommendedReplay'
 
 type Props = {
   lang?: Lang
+  onLang?: (lang: Lang) => void
   open: boolean
   landing?: boolean
   initialSeason?: number
@@ -30,6 +31,7 @@ const SESSION_TYPES: Array<'ALL' | CatalogSessionType> = [
 
 export function SessionCatalog({
   lang = 'en',
+  onLang,
   open,
   landing = false,
   initialSeason,
@@ -208,6 +210,12 @@ export function SessionCatalog({
           <div>
             <h2>{lang === 'ru' ? (landing ? 'Или выберите гонку из архива' : 'Выберите завершённую сессию') : (landing ? 'Or choose from the race archive' : 'Choose any completed session')}</h2>
           </div>
+          {onLang && (
+            <div className="tog-group catalog-lang" role="group" aria-label={(lang === 'ru' ? 'Язык' : 'Language')}>
+              <button type="button" className={`tog${lang === 'en' ? ' tog-on' : ''}`} onClick={() => onLang('en')}>EN</button>
+              <button type="button" className={`tog${lang === 'ru' ? ' tog-on' : ''}`} onClick={() => onLang('ru')}>RU</button>
+            </div>
+          )}
           {!landing && (
             <button autoFocus type="button" className="settings-close" onClick={onClose} aria-label={(lang === 'ru' ? 'Закрыть' : 'Close')}>×</button>
           )}

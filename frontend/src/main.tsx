@@ -636,6 +636,7 @@ function App() {
   return (
     <>
       <SessionCatalog lang={lang}
+        onLang={replay.setLang}
         open={catalogOpen}
         landing={mode === 'replay' && !sessionId}
         initialSeason={initialCatalogSeason}
