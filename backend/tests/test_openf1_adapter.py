@@ -679,3 +679,89 @@ def test_race_control_preserves_source_order_on_equal_timestamps():
     assert engine.state_at(1000)["session_status"] == "started"
     assert engine.state_at(2000)["session_status"] == "red_flag"
     assert not any(e.payload.get("message") == "SAFETY CAR DEPLOYED" for e in events)
+
+
+# ── Sector timing ─────────────────────────────────────────────────────────────
+
+def _sector_laps():
+    return [
+        {
+            "driver_number": 1, "lap_number": 1, "date_start": _T0,
+            "lap_duration": 78.0,
+            "duration_sector_1": 27.0, "duration_sector_2": 32.0,
+            "duration_sector_3": 19.0,
+        },
+        {
+            # Missing S2 must not fabricate an S2 timestamp; S3 still ends at the line.
+            "driver_number": 1, "lap_number": 2,
+            "date_start": "2024-05-26T13:01:18.000", "lap_duration": 78.0,
+            "duration_sector_1": 27.0, "duration_sector_2": None,
+            "duration_sector_3": 19.0,
+        },
+        {
+            # In-progress lap: S1 observed, no lap_duration yet → S1 only.
+            "driver_number": 16, "lap_number": 1, "date_start": _T0,
+            "lap_duration": None,
+            "duration_sector_1": 28.0, "duration_sector_2": None,
+            "duration_sector_3": None,
+        },
+        {
+            # S1 missing blocks the S2 timestamp even though S2 has a duration.
+            "driver_number": 4, "lap_number": 1, "date_start": _T0,
+            "lap_duration": 80.0,
+            "duration_sector_1": None, "duration_sector_2": 33.0,
+            "duration_sector_3": None,
+        },
+    ]
+
+
+def test_sector_times_are_source_backed_and_missing_earlier_sectors_block_later():
+    events = _ingest(overrides={"/laps": _sector_laps()})
+    sectors = sorted(
+        (e.driver_id, e.lap, e.payload["sector"], e.payload["time_ms"],
+         e.session_time_ms)
+        for e in events if e.type == "SectorTimeUpdated"
+    )
+    assert sectors == [
+        ("LEC", 1, 1, 28_000, 28_000),
+        ("VER", 1, 1, 27_000, 27_000),
+        ("VER", 1, 2, 32_000, 59_000),
+        ("VER", 1, 3, 19_000, 78_000),
+        ("VER", 2, 1, 27_000, 105_000),
+        ("VER", 2, 3, 19_000, 156_000),
+    ]
+    # NOR has no S1 duration → no sector events at all.
+    assert all(e.driver_id != "NOR" for e in events if e.type == "SectorTimeUpdated")
+    # The incomplete LEC lap still ends at its source-backed sector time, and
+    # the lap-completion fallback (LapCompleted at date_start) is untouched.
+    lap_events = [
+        (e.driver_id, e.lap, e.session_time_ms)
+        for e in events if e.type == "LapCompleted"
+    ]
+    assert ("LEC", 1, 0) in lap_events
+
+
+def test_sector_events_survive_incremental_reingest_without_duplicates():
+    events = _ingest(overrides={"/laps": _sector_laps()})
+    engine = ReplayEngine(events + events)
+    assert engine.duplicates_dropped == len(events)
+    state = engine.state_at(60_000)
+    ver_sectors = state["drivers"]["VER"]["sectors"]
+    assert ver_sectors[0] == {"lap": 1, "time_ms": 27_000, "at_ms": 27_000}
+    assert ver_sectors[1] == {"lap": 1, "time_ms": 32_000, "at_ms": 59_000}
+    assert ver_sectors[2] is None
+
+
+@pytest.mark.parametrize("value", [None, True, "", "NaN", "abc", -1.0, 0.0])
+def test_malformed_sector_durations_skip_their_rows(value):
+    laps = [{
+        "driver_number": 1, "lap_number": 1, "date_start": _T0,
+        "lap_duration": 78.0,
+        "duration_sector_1": value,
+        "duration_sector_2": 32.0,
+        "duration_sector_3": 19.0,
+    }]
+    events = _ingest(overrides={"/laps": laps})
+    sectors = [e for e in events if e.type == "SectorTimeUpdated"]
+    # Bad S1 blocks S2 (timestamp unknown); S3 still ends at the line.
+    assert [(e.payload["sector"], e.payload["time_ms"]) for e in sectors] == [(3, 19_000)]

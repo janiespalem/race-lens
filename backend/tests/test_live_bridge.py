@@ -1321,3 +1321,37 @@ def test_complete_live_weekend_lifecycle_smoke(tmp_path, monkeypatch):
     publish_session(store, SESSION.session_id, replay, *replay_files, event_count=1)
     recorder._set_live_status(SESSION, "replay_ready")
     assert store.objects["live/current.json"]["status"] == "replay_ready"
+
+
+def test_live_records_accept_and_validate_driver_sectors():
+    pointer, snapshot = _valid_records()
+    snapshot["race_state"]["drivers"]["VER"]["sectors"] = [
+        {"lap": 2, "time_ms": 27_795, "at_ms": 12_000},
+        {"lap": 2, "time_ms": 32_161, "at_ms": 19_000},
+        None,
+    ]
+    assert storage.validate_live_snapshot(snapshot, pointer=pointer, now=NOW) == snapshot
+
+    malformed = copy.deepcopy(snapshot)
+    malformed["race_state"]["drivers"]["VER"]["sectors"] = [
+        {"lap": 0, "time_ms": 27_795, "at_ms": 12_000}, None, None,
+    ]
+    with pytest.raises(storage.LiveRecordError, match="driver"):
+        storage.validate_live_snapshot(malformed, pointer=pointer, now=NOW)
+
+    negative = copy.deepcopy(snapshot)
+    negative["race_state"]["drivers"]["VER"]["sectors"] = [
+        {"lap": 2, "time_ms": 0, "at_ms": 12_000}, None, None,
+    ]
+    with pytest.raises(storage.LiveRecordError, match="driver"):
+        storage.validate_live_snapshot(negative, pointer=pointer, now=NOW)
+
+    two_slots = copy.deepcopy(snapshot)
+    two_slots["race_state"]["drivers"]["VER"]["sectors"] = [None, None]
+    with pytest.raises(storage.LiveRecordError, match="driver"):
+        storage.validate_live_snapshot(two_slots, pointer=pointer, now=NOW)
+
+    # Snapshots published before sector timing (no key) stay valid.
+    legacy = copy.deepcopy(snapshot)
+    legacy["race_state"]["drivers"]["VER"].pop("sectors", None)
+    assert storage.validate_live_snapshot(legacy, pointer=pointer, now=NOW) == legacy

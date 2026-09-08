@@ -31,6 +31,48 @@ def _write_feed(tmp_path):
     return str(feed)
 
 
+def test_sector_updates_keep_lap_identity_and_rewind_without_keyframe_echoes(tmp_path):
+    rows = [
+        ["DriverList", {"44": {"Tla": "HAM"}}, ""],
+        ["TimingData", {"Lines": {"44": {"NumberOfLaps": 0, "Position": "1"}}}, ""],
+        ["SessionStatus", {"Status": "Started"}, "2026-07-05T15:00:00Z"],
+    ]
+    patches = [
+        (10, {"Sectors": {"0": {"Value": "10.000"}}}),
+        (20, {"Sectors": {"1": {"Value": "10.000"}}}),
+        (30, {"NumberOfLaps": 1, "Sectors": {"2": {"Value": "10.000"}}}),
+        (31, {"Sectors": {"2": {"PreviousValue": "10.000"}}}),
+        (35, {"Sectors": [{"Value": "5.000"}, {"Value": ""}, {"Value": ""}]}),
+        (40, {"Sectors": {"0": {"Value": 123}, "1": {"Value": "NaN"}}}),
+        (45, {"Sectors": {"1": {"Value": "10.000"}}}),
+        (50, {"Sectors": [{"Value": ""}, {"Value": ""}, {"Value": ""}]}),
+    ]
+    rows.extend(["TimingData", {"Lines": {"44": patch}}, f"2026-07-05T15:00:{sec:02d}Z"]
+                for sec, patch in patches)
+    # Reconnect cache is not a newly completed sector.
+    rows.append(["TimingData", {"Lines": {"44": {
+        "NumberOfLaps": 1, "Sectors": [{"Value": "5.000"}]}}}, ""])
+    rows.append(["Heartbeat", {}, "2026-07-05T15:00:55Z"])
+    feed = tmp_path / "sectors.f1live"
+    feed.write_text("\n".join(map(repr, rows)) + "\n")
+    events = ingest_f1live(str(feed), session_id="sectors")
+    engine = ReplayEngine(events, snapshot_interval=2)
+    def sectors(at):
+        return engine.state_at(at)["drivers"]["HAM"]["sectors"]
+    assert sectors(9_999) == [None, None, None]
+    assert sectors(30_000) == [
+        {"lap": 1, "time_ms": 10_000, "at_ms": 10_000},
+        {"lap": 1, "time_ms": 10_000, "at_ms": 20_000},
+        {"lap": 1, "time_ms": 10_000, "at_ms": 30_000},
+    ]
+    assert sectors(31_000) == sectors(30_000)
+    assert sectors(40_000) == [{"lap": 2, "time_ms": 5_000, "at_ms": 35_000}, None, None]
+    assert sectors(45_000)[1] == {"lap": 2, "time_ms": 10_000, "at_ms": 45_000}
+    assert sectors(55_000) == [None, None, None]
+    assert sectors(19_999) == [{"lap": 1, "time_ms": 10_000, "at_ms": 10_000}, None, None]
+    assert not [e for e in events if e.type == "SectorTimeUpdated" and e.session_time_ms == 55_000]
+
+
 def test_team_radio_gets_absolute_audio_url_and_lap(tmp_path):
     events = ingest_f1live(_write_feed(tmp_path), session_id="test")
     radio = [e for e in events if e.payload.get("category") == "Radio"]

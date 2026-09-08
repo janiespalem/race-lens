@@ -25,7 +25,9 @@ data class DriverTiming(
     val tyre: String?,
     val tyreAge: Int?,
     val laps: Int,
+    val sectors: List<SectorTime?> = emptyList(),
 )
+data class SectorTime(val lap: Int?, val timeMs: Int)
 data class Weather(val rainfall: Boolean?, val trackTempC: Double?, val airTempC: Double?)
 data class Battle(val driverOneId: String, val driverTwoId: String, val intervalSeconds: Double?)
 data class RaceSnapshot(val atMs: Long, val lap: Int, val status: String, val drivers: List<DriverTiming>, val weather: Weather? = null, val sessionName: String? = null, val battle: Battle? = null)
@@ -158,6 +160,7 @@ private fun parseRaceState(json: JSONObject): RaceSnapshot {
                 tyre = nullableJsonString(driver.opt("tyre_compound")),
                 tyreAge = driver.optNullableInt("tyre_age_laps"),
                 laps = driver.optInt("laps_completed"),
+                sectors = parseSectors(driver.optJSONArray("sectors")),
             )
         },
         weather = weather,
@@ -165,6 +168,17 @@ private fun parseRaceState(json: JSONObject): RaceSnapshot {
         battle = parseBattles(json.optJSONArray("battles")),
     )
 }
+
+internal fun parseSectors(items: JSONArray?): List<SectorTime?> =
+    if (items == null) emptyList() else List(items.length()) { index ->
+        val slot = items.optJSONObject(index)
+        if (slot == null) {
+            null
+        } else {
+            val timeMs = slot.optInt("time_ms")
+            SectorTime(slot.optNullableInt("lap"), timeMs).takeIf { timeMs > 0 }
+        }
+    }
 
 private fun parseBattles(items: JSONArray?): Battle? {
     if (items == null) return null

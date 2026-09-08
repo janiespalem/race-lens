@@ -33,6 +33,34 @@ def _timestamp_to_session_ms(ts, session_zero) -> int | None:
     return _ms(pd.Timestamp(ts) - session_zero)
 
 
+def _lap_sector_events(
+    sid: str,
+    drv: str,
+    lap_no: int,
+    src: str,
+    sector_times: list[int | None],
+    sector_session_times: list[int | None],
+) -> list[Event]:
+    """Sector observations for one completed FastF1 lap.
+
+    FastF1 stores an absolute session timestamp per sector
+    (Sector1SessionTime..Sector3SessionTime), so each sector stands alone: a
+    missing earlier sector never blocks a later one, and a missing duration or
+    timestamp skips only that sector. No S3 is ever inferred by subtraction.
+    """
+    out: list[Event] = []
+    for index in range(3):
+        duration = sector_times[index] if index < len(sector_times) else None
+        at_ms = sector_session_times[index] if index < len(sector_session_times) else None
+        if duration is None or duration <= 0 or at_ms is None:
+            continue
+        out.append(
+            event(sid, "SectorTimeUpdated", at_ms, drv, lap=lap_no, source=src,
+                  sector=index + 1, time_ms=duration)
+        )
+    return out
+
+
 def session_id_for(year: int, gp: str, session: str) -> str:
     return f"{year}_{gp.lower().replace(' ', '_')}_{session.lower()}"
 
@@ -123,6 +151,18 @@ def session_to_events(ses, sid: str, src: str = "fastf1") -> list[Event]:
                       position=pos)
             )
             by_lap.setdefault(lap_no, []).append((pos, t_end, drv))
+
+        # Source-backed sector observations, each anchored at its own session
+        # timestamp — never reported early at the lap end.
+        try:
+            sector_times = [_ms(lap[f"Sector{i}Time"]) for i in (1, 2, 3)]
+            sector_session_times = [_ms(lap[f"Sector{i}SessionTime"]) for i in (1, 2, 3)]
+        except KeyError:
+            pass  # legacy archive without sector columns — laps alone still replay
+        else:
+            events.extend(
+                _lap_sector_events(sid, drv, lap_no, src, sector_times, sector_session_times)
+            )
 
         t_pit_in = _ms(lap["PitInTime"])
         if t_pit_in is not None:

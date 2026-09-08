@@ -470,7 +470,7 @@ _DRIVER_FIELDS = {
     "best_lap_ms", "gap_s", "interval_s", "tyre_compound", "tyre_age_laps",
     "pit_count", "in_pit", "recent_laps_ms", "retired", "x", "y", "progress",
 }
-_DRIVER_OPTIONAL_FIELDS = {"stopped", "retirement_inferred"}
+_DRIVER_OPTIONAL_FIELDS = {"stopped", "retirement_inferred", "sectors"}
 _INSIGHT_FIELDS = {
     "insight_id", "type", "severity", "confidence", "created_at_ms", "lap",
     "driver_ids", "evidence",
@@ -599,6 +599,26 @@ def _bounded_rows(value: object, name: str, limit: int) -> list:
     return value
 
 
+def _valid_driver_sectors(value: object) -> bool:
+    """Three slots in S1/S2/S3 order; each null or its own {lap, time_ms, at_ms}."""
+    if value is None:
+        return True  # older published snapshots predate sector timing
+    if not isinstance(value, list) or len(value) != 3:
+        return False
+    for slot in value:
+        if slot is None:
+            continue
+        if (
+            not isinstance(slot, dict)
+            or set(slot) != {"lap", "time_ms", "at_ms"}
+            or (slot["lap"] is not None and not _integer(slot["lap"], minimum=1, maximum=500))
+            or not _integer(slot["time_ms"], minimum=1)
+            or not _integer(slot["at_ms"])
+        ):
+            return False
+    return True
+
+
 def _validate_race_state(value: object, replay_session_id: str) -> None:
     if (
         not isinstance(value, dict)
@@ -700,6 +720,7 @@ def _validate_race_state(value: object, replay_session_id: str) -> None:
             or len(driver["recent_laps_ms"]) > 3
             or not all(_integer(lap_ms) for lap_ms in driver["recent_laps_ms"])
             or any(driver[field] is not None for field in ("x", "y", "progress"))
+            or not _valid_driver_sectors(driver.get("sectors"))
         ):
             raise LiveRecordError("live snapshot driver state is invalid")
     classification = value["classification"]

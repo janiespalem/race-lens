@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import time
 import urllib.error
 import urllib.parse
@@ -291,6 +292,20 @@ def _chronological(rows: list[dict], date_field: str) -> list[dict]:
     return sorted(rows, key=key)
 
 
+def _sector_ms(value: Any) -> int | None:
+    """Sector duration seconds → positive whole milliseconds, None if unusable."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(seconds):
+        return None
+    milliseconds = round(seconds * 1000)
+    return milliseconds if milliseconds > 0 else None
+
+
 def _laps_to_events(
     lap_rows: list[dict],
     driver_map: dict[int, str],
@@ -298,7 +313,15 @@ def _laps_to_events(
     to_ms: Callable[[float], int],
     mk: Callable[..., Event],
 ) -> list[Event]:
-    """Laps → LapCompleted."""
+    """Laps → LapCompleted + source-backed SectorTimeUpdated.
+
+    OpenF1 timestamps sectors implicitly: each sector ends at date_start plus
+    the cumulative durations of the sectors before it. A missing earlier
+    duration therefore makes later sector timestamps unknowable — they are
+    skipped, never fabricated. S3 crosses the line with the lap itself, so its
+    timestamp is the lap end (date_start + lap_duration); without lap_duration
+    there is no source-backed S3 timestamp.
+    """
     events: list[Event] = []
     for row in lap_rows:
         dn = _parse_int(row.get("driver_number"))
@@ -331,6 +354,24 @@ def _laps_to_events(
 
         events.append(mk(sid, "LapCompleted", t_end_ms, drv, lap=lap_no,
                          lap_time_ms=lap_time_ms))
+
+        if date_start is None:
+            continue
+        s1 = _sector_ms(row.get("duration_sector_1"))
+        s2 = _sector_ms(row.get("duration_sector_2"))
+        s3 = _sector_ms(row.get("duration_sector_3"))
+        if s1 is not None:
+            events.append(mk(sid, "SectorTimeUpdated", to_ms(date_start + s1 / 1000),
+                             drv, lap=lap_no, sector=1, time_ms=s1))
+        if s1 is not None and s2 is not None:
+            events.append(mk(sid, "SectorTimeUpdated",
+                             to_ms(date_start + (s1 + s2) / 1000),
+                             drv, lap=lap_no, sector=2, time_ms=s2))
+        # S3 ends at the finish line = lap end. Requires lap_duration: do not
+        # rebuild it from sector sums when the provider omits it.
+        if s3 is not None and duration is not None and t_end_ms is not None:
+            events.append(mk(sid, "SectorTimeUpdated", t_end_ms, drv, lap=lap_no,
+                             sector=3, time_ms=s3))
     return events
 
 

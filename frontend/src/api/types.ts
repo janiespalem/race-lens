@@ -83,6 +83,17 @@ export type DriverState = {
   /** Cumulative track progress (laps + arc). Animation only — NOT ordering. */
   progress: number | null
   recent_laps_ms: number[]
+  /** Latest observation per timing sector (S1..S3). Each slot carries its own lap; null = unknown. */
+  sectors?: (SectorTime | null)[]
+}
+
+export type SectorTime = {
+  /** Lap the observation belongs to; null when the source cannot say. */
+  lap: number | null
+  /** Sector duration in whole milliseconds. */
+  time_ms: number
+  /** Session time the observation was recorded at. */
+  at_ms: number
 }
 
 export type DataQuality = {

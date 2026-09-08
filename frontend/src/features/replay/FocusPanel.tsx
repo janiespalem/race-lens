@@ -31,6 +31,30 @@ function fmtLap(ms: number | null | undefined): string {
   return `${m}:${String(s).padStart(2, '0')}.${t}`
 }
 
+function fmtSector(ms: number): string {
+  return (ms / 1000).toFixed(3)
+}
+
+/** S1..S3 row: each chip shows the sector's own lap — slots may span laps. */
+function SectorRow({ driver, lang }: { driver: DriverState; lang: Lang }) {
+  const sectors = Array.isArray(driver.sectors) ? driver.sectors.slice(0, 3) : []
+  if (sectors.every((sector) => !sector)) return null
+  return (
+    <div className="focus-sectors" aria-label={lang === 'ru' ? 'Времена секторов' : 'Sector times'}>
+      {[0, 1, 2].map((index) => {
+        const sector = sectors[index]
+        return (
+          <span key={index} className={`focus-sector${sector ? '' : ' dim'}`}>
+            <span className="focus-sector-name">S{index + 1}</span>
+            <span className="focus-sector-time">{sector ? fmtSector(sector.time_ms) : '—'}</span>
+            <span className="focus-sector-lap">{sector ? `${lang === 'ru' ? 'К' : 'L'}${sector.lap ?? '?'}` : ''}</span>
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
 function fmtGap(s: number | null, lang: Lang): string {
   if (s === null) return '—'
   return `+${s.toFixed(1)}${lang === 'ru' ? 'с' : 's'}`
@@ -210,6 +234,7 @@ function DriverCard({ lang, driverId, driver, sessionId, live, atMs, lap, onStra
         </span>
         <span className="focus-pits" style={{ fontSize: 14 }}>{driver.pit_count ?? 0}×{lang === 'ru' ? 'ПИТ' : 'PIT'}</span>
       </div>
+      <SectorRow driver={driver} lang={lang} />
       <div className="focus-laps">
         {laps.length === 0 && <span className="focus-lap-cell dim">—</span>}
         {laps.map((ms, i) => {
