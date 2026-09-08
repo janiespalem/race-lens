@@ -520,6 +520,9 @@ class Recorder:
             isolate_session(raw, clean, session)
             return clean
 
+        if self.now() >= session.capture_until:
+            raise RuntimeError("capture window ended with no matching recording")
+
         command = [
             sys.executable, "-m", "racelens.cli", "capture-live",
             "--no-auth", "--timeout", "0", "--append", "-o", str(raw),
@@ -773,11 +776,12 @@ class Recorder:
         self.remote_processing.touch()
         try:
             year = int(session_id.split("-", 1)[0])
-            matches = [
-                session
-                for session in load_fastf1_schedule(year)
-                if session.session_id == session_id
-            ]
+            matches = [session for session in self._schedule if session.session_id == session_id]
+            if not matches:
+                matches = [
+                    session for session in load_fastf1_schedule(year)
+                    if session.session_id == session_id
+                ]
             if len(matches) != 1:
                 raise RuntimeError("FastF1 schedule does not contain the requested session")
             session = matches[0]
@@ -856,11 +860,19 @@ class Recorder:
         # A crash may happen after the raw file is complete but before CAPTURED
         # is persisted. Resume/finalize RECORDING even after its schedule window.
         for session_id, item in state.sessions.items():
-            if item.phase is not Phase.RECORDING:
+            recovering = (
+                item.phase is Phase.FAILED
+                and state.due_phase(session_id, now) is Phase.RECORDING
+                and session_id in by_id
+                and now >= by_id[session_id].capture_until
+            )
+            if item.phase is not Phase.RECORDING and not recovering:
                 continue
             session = by_id.get(session_id)
             if session is None:
                 raise RuntimeError(f"schedule no longer contains {session_id}")
+            if recovering:
+                self.store.transition(session_id, Phase.RECORDING, now)
             try:
                 self.capture(session)
             except Exception as exc:
@@ -911,6 +923,8 @@ class Recorder:
                 and item.retry_phase is Phase.RECORDING
                 and item.retry_at is not None
                 and item.retry_at > now
+                and session_id in by_id
+                and item.retry_at < by_id[session_id].capture_until
             )
         )
         next_capture = min(capture_deadlines, default=None)
@@ -959,7 +973,8 @@ class Recorder:
         while True:
             self._beat()
             try:
-                print(f"{self.now().isoformat()} {self.run_once()}", flush=True)
+                result = self.run_once()
+                print(f"{self.now().isoformat()} {result}", flush=True)
             except Exception as exc:
                 print(f"{self.now().isoformat()} worker error: {exc}", file=sys.stderr, flush=True)
             self._beat()

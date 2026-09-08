@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta, timezone
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 from racelens.recorder.schedule import (
     HARD_DURATION,
     ScheduledSession,
+    _fetch_fastf1_schedule,
     canonical_alias,
     load_fastf1_schedule,
     parse_fastf1_schedule,
@@ -74,7 +76,7 @@ def test_dataframe_shape_and_fastf1_boundary(monkeypatch):
     )
     monkeypatch.setitem(__import__("sys").modules, "fastf1", fake)
 
-    assert load_fastf1_schedule(2026)[0].kind == "R"
+    assert _fetch_fastf1_schedule(2026)[0].kind == "R"
     assert calls == [(2026, False)]
 
 
@@ -117,3 +119,27 @@ def test_naive_now_fails_closed():
 def test_naive_schedule_time_is_rejected():
     with pytest.raises(ValueError, match="starts_at"):
         ScheduledSession(2026, 1, "Test", "R", datetime(2026, 7, 17, 12))
+
+
+def test_schedule_fetch_has_a_killable_deadline(monkeypatch, tmp_path):
+    from racelens.recorder import schedule
+
+    (tmp_path / "fastf1.py").write_text(
+        "import time\ndef get_event_schedule(*args, **kwargs): time.sleep(60)\n"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    monkeypatch.setattr(schedule, "SCHEDULE_TIMEOUT_SECONDS", 0.2, raising=False)
+    with pytest.raises(subprocess.TimeoutExpired):
+        load_fastf1_schedule(2026)
+
+
+def test_schedule_child_returns_utc_sessions(monkeypatch, tmp_path):
+    (tmp_path / "fastf1.py").write_text(
+        "def get_event_schedule(year, include_testing):\n"
+        "    assert year == 2026 and include_testing is False\n"
+        "    return [{'Year': year, 'RoundNumber': 7, 'EventName': 'Barcelona',\n"
+        "             'Session1': 'Race', 'Session1DateUtc': '2026-06-14T13:00:00Z'}]\n"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    sessions = load_fastf1_schedule(2026)
+    assert sessions == [ScheduledSession(2026, 7, "Barcelona", "R", _at(2026, 6, 14, 13))]

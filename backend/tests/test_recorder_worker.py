@@ -207,7 +207,7 @@ def test_failed_capture_retry_precedes_older_captured_archive(tmp_path, monkeypa
         2026, 12, "Dutch Grand Prix", "FP1", now - timedelta(hours=3),
     )
     retry_session = ScheduledSession(
-        2026, 13, "Belgian Grand Prix", "FP1", now - timedelta(hours=2),
+        2026, 13, "Belgian Grand Prix", "FP1", now - timedelta(hours=1),
     )
     retry_at = now + timedelta(minutes=15)
     recorder = Recorder(_config(tmp_path), now=lambda: now)
@@ -401,3 +401,73 @@ def test_idle_worker_processes_one_durable_historical_request(tmp_path, monkeypa
     assert recorder.run_once() == "requested archive complete: 2024-08-r"
     assert recorder.remote_queue.get("2024-08-r")["status"] == "ready"
     assert not recorder.remote_processing.exists()
+
+
+def test_remote_request_uses_loaded_schedule_when_upstream_is_unavailable(tmp_path, monkeypatch):
+    now = datetime(2026, 9, 8, tzinfo=UTC)
+    recorder = Recorder(_config(tmp_path), now=lambda: now, object_store=MemoryStore())
+    recorder._schedule = [SESSION]
+    recorder.remote_queue.enqueue(SESSION.session_id, fixture_stem(SESSION))
+    monkeypatch.setattr(
+        "racelens.recorder.worker.load_fastf1_schedule",
+        lambda _year: (_ for _ in ()).throw(OSError("upstream unavailable")),
+    )
+    processed = []
+    monkeypatch.setattr(
+        recorder, "process_requested", lambda session, replay_id: processed.append(session),
+    )
+
+    assert recorder._run_remote_once() == "requested archive complete: 2026-13-r"
+    assert processed == [SESSION]
+    assert not recorder.remote_processing.exists()
+
+
+def test_due_failed_capture_recovers_after_window_closes(tmp_path, monkeypatch):
+    now = SESSION.capture_until + timedelta(minutes=1)
+    recorder = Recorder(_config(tmp_path), now=lambda: now)
+    recorder.store.transition(SESSION.session_id, Phase.RECORDING, SESSION.starts_at)
+    recorder.store.transition(
+        SESSION.session_id, Phase.FAILED, SESSION.capture_until - timedelta(minutes=6),
+        error="connection lost", retry_at=SESSION.capture_until - timedelta(minutes=1),
+    )
+    monkeypatch.setattr("racelens.recorder.worker.load_fastf1_schedule", lambda _year: [SESSION])
+    recovered = []
+    monkeypatch.setattr(recorder, "capture", lambda session: recovered.append(session))
+
+    assert recorder.run_once() == "captured: 2026-13-r"
+    assert recovered == [SESSION]
+    assert recorder.store.load().sessions[SESSION.session_id].phase is Phase.CAPTURED
+
+
+def test_expired_capture_without_matching_raw_never_starts_signalr(tmp_path, monkeypatch):
+    recorder = Recorder(_config(tmp_path), now=lambda: SESSION.capture_until + timedelta(seconds=1))
+    def unexpected_spawn(*_args, **_kwargs):
+        pytest.fail("expired capture must not start a SignalR subprocess")
+    monkeypatch.setattr("racelens.recorder.worker.subprocess.Popen", unexpected_spawn)
+
+    with pytest.raises(RuntimeError, match="no matching recording"):
+        recorder.capture(SESSION)
+
+
+def test_expired_missing_capture_does_not_block_other_archive_between_retries(tmp_path, monkeypatch):
+    now = SESSION.capture_until + timedelta(minutes=1)
+    older = replace(SESSION, round_number=12, starts_at=SESSION.starts_at - timedelta(days=7))
+    recorder = Recorder(_config(tmp_path), now=lambda: now)
+    recorder.store.transition(older.session_id, Phase.RECORDING, older.starts_at)
+    recorder.store.transition(older.session_id, Phase.CAPTURED, older.capture_until)
+    recorder.store.transition(SESSION.session_id, Phase.RECORDING, SESSION.starts_at)
+    recorder.store.transition(
+        SESSION.session_id, Phase.FAILED, SESSION.capture_until,
+        error="connection lost", retry_at=now,
+    )
+    monkeypatch.setattr(
+        "racelens.recorder.worker.load_fastf1_schedule", lambda _year: [older, SESSION],
+    )
+    processed = []
+    monkeypatch.setattr(recorder, "process", lambda session: processed.append(session.session_id))
+
+    assert recorder.run_once().startswith(f"capture failed: {SESSION.session_id}:")
+    assert recorder.store.load().sessions[SESSION.session_id].retry_at > now
+    assert recorder.run_once() == f"complete: {older.session_id}"
+    assert processed == [older.session_id]
+    assert recorder.store.load().sessions[older.session_id].phase is Phase.COMPLETE

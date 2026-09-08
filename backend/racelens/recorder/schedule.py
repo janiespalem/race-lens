@@ -1,13 +1,17 @@
 """Pure schedule parsing and due-session selection for the recorder."""
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from collections.abc import Collection, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 STANDARD_START_EARLY = timedelta(minutes=10)
 RACE_START_EARLY = timedelta(hours=1)
+SCHEDULE_TIMEOUT_SECONDS = 30
 HARD_DURATION = {
     "FP1": timedelta(hours=2),
     "FP2": timedelta(hours=2),
@@ -120,7 +124,19 @@ def parse_fastf1_schedule(schedule: Any) -> list[ScheduledSession]:
 
 
 def load_fastf1_schedule(year: int) -> list[ScheduledSession]:
-    """Optional dependency boundary; importing this module does not require FastF1."""
+    """Bound the entire optional FastF1 fetch, including its upstream fallbacks."""
+    result = subprocess.run(
+        [sys.executable, "-m", "racelens.recorder.schedule", str(int(year))],
+        capture_output=True, text=True, check=True, timeout=SCHEDULE_TIMEOUT_SECONDS,
+    )
+    return [
+        ScheduledSession(**{**row, "starts_at": datetime.fromisoformat(row["starts_at"])})
+        for row in json.loads(result.stdout)
+    ]
+
+
+def _fetch_fastf1_schedule(year: int) -> list[ScheduledSession]:
+    """Run only in the bounded child; FastF1 HTTP calls can otherwise wait forever."""
     import fastf1
 
     return parse_fastf1_schedule(fastf1.get_event_schedule(year, include_testing=False))
@@ -142,3 +158,10 @@ def select_due_session(
         and session.capture_from <= current < session.capture_until
     )
     return min(due, key=lambda item: (item.starts_at, item.session_id), default=None)
+
+
+if __name__ == "__main__":
+    print(json.dumps([
+        {**asdict(item), "starts_at": item.starts_at.isoformat()}
+        for item in _fetch_fastf1_schedule(int(sys.argv[1]))
+    ]))
