@@ -312,7 +312,7 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
             if isinstance(info, dict) and info.get("Tla"):
                 num_to_abbr[str(num)] = str(info["Tla"])
 
-    def apply_timing(lines: dict, t_ms: int, *, emit_activity: bool) -> None:
+    def apply_timing(lines: dict, t_ms: int, *, emit_activity: bool, timestamped: bool) -> None:
         for num, patch in lines.items():
             if not isinstance(patch, dict):
                 continue
@@ -343,11 +343,39 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
                 last_lap_ms[d] = _parse_laptime_ms(lt.get("Value") if isinstance(lt, dict) else lt)
 
             n = patch.get("NumberOfLaps")
-            if isinstance(n, int) and n > laps.get(d, 0):
+            if type(n) is int and n >= 0 and (d not in laps or n > laps[d]):
                 laps[d] = n
-                if emit_activity:
+                if emit_activity and n > 0:
                     events.append(event(sid, "LapCompleted", t_ms, d, lap=n,
                                         lap_time_ms=last_lap_ms.get(d)))
+
+            sectors = patch.get("Sectors")
+            if emit_activity and timestamped and isinstance(sectors, (dict, list)):
+                if isinstance(sectors, list):
+                    sectors = {str(i): value for i, value in enumerate(sectors)}
+                finish = sectors.get("2")
+                finish_value = finish.get("Value") if isinstance(finish, dict) else None
+                completed_here = (
+                    type(n) is int and n > 0 and isinstance(finish_value, str)
+                    and (_parse_laptime_ms(finish_value) or 0) > 0
+                )
+                for index in range(3):
+                    sector = sectors.get(str(index))
+                    if not isinstance(sector, dict) or not isinstance(sector.get("Value"), str):
+                        continue
+                    value = sector["Value"]
+                    duration = _parse_laptime_ms(value)
+                    if value != "" and (duration is None or duration <= 0):
+                        continue
+                    # S3 normally accompanies NumberOfLaps increment. Without
+                    # that count its lap is unknown, not blindly completed+1.
+                    sector_lap = n if completed_here else (
+                        laps[d] + 1 if index < 2 and d in laps else None
+                    )
+                    events.append(event(
+                        sid, "SectorTimeUpdated", t_ms, d, lap=sector_lap,
+                        source="f1live", sector=index + 1, time_ms=duration,
+                    ))
 
             if "InPit" in patch:
                 now_in = bool(patch["InPit"])
@@ -445,7 +473,7 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
         elif cat == "TimingData":
             lines = payload.get("Lines")
             if isinstance(lines, dict):
-                apply_timing(lines, t_ms, emit_activity=emit_activity)
+                apply_timing(lines, t_ms, emit_activity=emit_activity, timestamped=t_posix is not None)
         elif cat == "TimingAppData":
             lines = payload.get("Lines")
             if isinstance(lines, dict):

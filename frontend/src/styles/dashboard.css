@@ -938,6 +938,37 @@
   font-weight: 700;
 }
 
+/* ── focus sector chips (S1/S2/S3, each with its own lap) ────────── */
+.focus-sectors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: baseline;
+}
+.focus-sector {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.focus-sector-name {
+  font: 700 11px var(--cond);
+  color: var(--dim);
+  letter-spacing: 0.08em;
+}
+.focus-sector-time {
+  font: 700 14px var(--cond);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+.focus-sector-lap {
+  font: 600 11px var(--cond);
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.focus-sector.dim .focus-sector-time {
+  color: var(--dim);
+}
+
 /* ── H2H redesign ─────────────────────────────────────────────── */
 .h2h-body {
   display: flex;

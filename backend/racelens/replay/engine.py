@@ -27,6 +27,7 @@ _EVENT_PRIORITY = {
     "PitIn": 20,
     "PitOut": 21,
     "LapCompleted": 30,
+    "SectorTimeUpdated": 31,
     "TyreStintUpdated": 40,
     "WeatherUpdated": 45,
     "PositionChanged": 50,
@@ -58,6 +59,9 @@ def _new_driver() -> dict[str, Any]:
         "grid_position": None,  # baseline = first-known position (grid, or mid-join lap for late starts)
         "laps_completed": 0,
         "last_lap_ms": None,
+        # Latest observation per timing sector. Each carries its own lap;
+        # adjacent slots can belong to different laps. Null means unknown.
+        "sectors": [None, None, None],
         "best_lap_ms": None,
         "gap_s": None,        # to leader
         "interval_s": None,   # to car ahead
@@ -243,6 +247,13 @@ class ReplayEngine:
             if d["tyre_age_laps"] is not None:
                 d["tyre_age_laps"] += 1
             state["lap"] = max(state["lap"], e.lap or 0)
+
+        elif e.type == "SectorTimeUpdated":
+            d = self._driver(state, e.driver_id)
+            d["sectors"][p["sector"] - 1] = (
+                {"lap": e.lap, "time_ms": p["time_ms"], "at_ms": e.session_time_ms}
+                if p["time_ms"] is not None else None
+            )
 
         elif e.type == "PositionChanged":
             d = self._driver(state, e.driver_id)

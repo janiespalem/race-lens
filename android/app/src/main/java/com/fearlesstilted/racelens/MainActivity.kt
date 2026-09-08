@@ -281,10 +281,20 @@ private fun FocusArea(state: ScreenState) {
                     Text(id, color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace, maxLines = 1)
                     Text("P${driver?.position ?: "—"}  ${formatGap(driver?.gapSeconds)}", color = Steel, fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("${driver?.tyre?.take(1) ?: "—"}${driver?.tyreAge?.let { " L$it" } ?: ""}  ·  ${driver?.laps ?: "—"} LAPS", color = Steel, fontFamily = FontFamily.Monospace, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    driver?.let { SectorLine(it) }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun SectorLine(driver: DriverTiming) {
+    val parts = driver.sectors.take(3).mapIndexed { index, sector ->
+        if (sector == null) "S${index + 1} —" else "S${index + 1} ${formatSector(sector.timeMs)} L${sector.lap ?: "?"}"
+    }
+    if (parts.all { it.endsWith("—") }) return
+    Text(parts.joinToString("  "), color = Paper, fontFamily = FontFamily.Monospace, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
 }
 
 @Composable
@@ -443,6 +453,7 @@ private fun shortName(id: String): String {
         ?: id.replace('_', ' ').replaceFirstChar { it.uppercase() }
 }
 private fun formatGap(seconds: Double?) = when { seconds == null -> "—"; seconds == 0.0 -> "LEADER"; else -> "+%.3f".format(Locale.ROOT, seconds) }
+private fun formatSector(ms: Int) = "%.3f".format(Locale.ROOT, ms / 1000.0)
 private fun formatTime(ms: Long): String { val total = ms.coerceAtLeast(0) / 1_000; return "%d:%02d".format(total / 60, total % 60) }
 private fun releasePlayer(player: MediaPlayer?) {
     player?.setOnPreparedListener(null)

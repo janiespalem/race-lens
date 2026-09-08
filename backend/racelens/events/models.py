@@ -9,13 +9,14 @@ import hashlib
 import json
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Raw events — produced by adapters
 EVENT_TYPES = {
     "SessionStarted",
     "SessionStatusChanged",
     "LapCompleted",
+    "SectorTimeUpdated",
     "PositionChanged",
     "GapUpdated",
     "IntervalUpdated",
@@ -62,6 +63,21 @@ class Event(BaseModel):
         if value not in EVENT_TYPES:
             raise ValueError(f"unknown event type: {value}")
         return value
+
+    @model_validator(mode="after")
+    def validate_sector_time(self):
+        if self.type == "SectorTimeUpdated":
+            sector = self.payload.get("sector")
+            duration = self.payload.get("time_ms")
+            if not self.driver_id or type(sector) is not int or not 1 <= sector <= 3:
+                raise ValueError("sector time requires a driver and sector 1..3")
+            if "time_ms" not in self.payload or (
+                duration is not None and (type(duration) is not int or duration <= 0)
+            ):
+                raise ValueError("sector time must be positive milliseconds or explicit null")
+            if self.lap is not None and self.lap < 1:
+                raise ValueError("sector lap must be positive or unknown")
+        return self
 
 
 def make_event_id(

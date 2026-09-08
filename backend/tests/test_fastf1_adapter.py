@@ -175,3 +175,46 @@ def test_repeated_flag_transitions_survive_rebasing_and_real_duplicates_do_not(
     assert len([e for e in engine.events if e.type == "RaceControlMessage"]) == 3
     assert all(e.session_time_ms >= 0 for e in restored)
     assert [e.event_id for e in events] == [e.event_id for e in normalize()]
+
+
+def test_lap_sector_events_use_each_sectors_own_session_timestamp():
+    from racelens.adapters.fastf1_adapter import _lap_sector_events
+
+    events = _lap_sector_events(
+        "race", "VER", 12, "fastf1",
+        sector_times=[27_795, None, 19_000],
+        sector_session_times=[118_000, None, 150_000],
+    )
+    assert [
+        (e.lap, e.payload["sector"], e.payload["time_ms"], e.session_time_ms)
+        for e in events
+    ] == [
+        (12, 1, 27_795, 118_000),
+        (12, 3, 19_000, 150_000),
+    ]
+
+
+def test_lap_sector_events_never_invent_a_timestamp_or_a_zero():
+    from racelens.adapters.fastf1_adapter import _lap_sector_events
+
+    # Missing S2 duration: skipped, and it does not block the S3 that follows.
+    events = _lap_sector_events(
+        "race", "VER", 12, "fastf1",
+        sector_times=[27_795, None, 19_000],
+        sector_session_times=[118_000, 140_000, 150_000],
+    )
+    assert [e.payload["sector"] for e in events] == [1, 3]
+
+    # Non-positive durations are dropped, even with a valid timestamp.
+    assert _lap_sector_events(
+        "race", "VER", 12, "fastf1",
+        sector_times=[0, -5, None],
+        sector_session_times=[118_000, 140_000, 150_000],
+    ) == []
+
+    # A missing timestamp skips only that sector.
+    assert [e.payload["sector"] for e in _lap_sector_events(
+        "race", "VER", 12, "fastf1",
+        sector_times=[27_795, 32_161, 19_000],
+        sector_session_times=[None, 140_000, 150_000],
+    )] == [2, 3]

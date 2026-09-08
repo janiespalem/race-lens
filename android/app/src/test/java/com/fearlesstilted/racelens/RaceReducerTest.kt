@@ -293,3 +293,20 @@ class RaceReducerTest {
         assertEquals("UNKNOWN · AIR 20°", conditionsSummary(Weather(null, null, 20.8)))
     }
 }
+
+class SectorParsingTest {
+    @Test
+    fun sectorsKeepEachSlotsOwnLapAndDropMalformedValues() {
+        val json = org.json.JSONArray(
+            "[{\"lap\":2,\"time_ms\":27795,\"at_ms\":12000}," +
+                "{\"lap\":2,\"time_ms\":32161,\"at_ms\":19000}," +
+                "null," +
+                "{\"lap\":null,\"time_ms\":0,\"at_ms\":1}]",
+        )
+        assertEquals(
+            listOf(SectorTime(2, 27795), SectorTime(2, 32161), null, null),
+            parseSectors(json),
+        )
+        assertEquals(emptyList<SectorTime?>(), parseSectors(null))
+    }
+}
