@@ -94,6 +94,73 @@ def test_ingest_seq_monotonic():
     assert runner_seqs == list(range(len(runner._all))), "ingest_seq not monotonic/dense"
 
 
+def test_full_snapshot_rebase_discards_prestart_timestamps():
+    before = [
+        event(SID, "SessionStarted", 0, formation=True),
+        event(SID, "PositionChanged", 30_000, "VER", position=2),
+    ]
+    after = [
+        event(SID, "SessionStarted", 0),
+        event(SID, "PositionChanged", 1_000, "VER", position=1),
+    ]
+    runner = LiveRunner(_sliced_fetch([before, after]))
+    runner._poll_once()
+    runner._poll_once()
+
+    state = runner.state_now()
+    assert state["at_ms"] == 1_000
+    assert state["session_status"] == "started"
+    assert state["drivers"]["VER"]["position"] == 1
+
+
+def test_full_snapshot_removal_rebuilds_state_without_new_events():
+    baseline = [
+        event(SID, "SessionStarted", 0),
+        event(SID, "PositionChanged", 1_000, "VER", position=1),
+    ]
+    runner = LiveRunner(_sliced_fetch([
+        baseline + [event(SID, "RetirementDetected", 2_000, "VER")], baseline,
+    ]))
+    runner._poll_once()
+    assert runner.state_now()["drivers"]["VER"]["retired"]
+    runner._poll_once()
+
+    assert not runner.state_now()["drivers"]["VER"]["retired"]
+    assert runner.status()["events_total"] == 2
+
+
+def test_empty_full_snapshot_clears_state_and_retracted_finish():
+    runner = LiveRunner(_sliced_fetch([
+        [event(SID, "SessionStatusChanged", 1_000, status="finished")], [],
+    ]))
+    runner._poll_once()
+    assert runner._finish_seen_at is not None
+    runner._poll_once()
+
+    assert runner.state_now().get("error") == "no data yet"
+    assert runner._finish_seen_at is None
+
+
+@pytest.mark.parametrize("getter", ["state_now", "status"])
+def test_getters_keep_captured_engine_when_empty_poll_interleaves(monkeypatch, getter):
+    runner = LiveRunner(lambda: mini_race())
+    runner._poll_once()
+    engine = runner.engine
+    reads = [engine]
+    monkeypatch.setattr(
+        LiveRunner, "engine", property(lambda self: reads.pop() if reads else None),
+        raising=False,
+    )
+
+    result = getattr(runner, getter)()
+
+    if getter == "state_now":
+        assert result["at_ms"] == 250_000
+        assert result["classification"] == ["VER", "NOR", "LEC"]
+    else:
+        assert result["data_quality"] == "good"
+
+
 def test_state_now_advances():
     """state_now() should reflect more laps after each poll."""
     all_events = mini_race()
@@ -379,34 +446,31 @@ def test_live_incremental():
     )
 
 
-def test_live_source_truncation_does_not_lose_events():
-    """If the source returns FEWER events than a previous poll (e.g. OpenF1 blip),
-    already-accumulated events must NOT be discarded from _all.
-
-    This is the key resilience invariant: _all grows monotonically.
-    """
+def test_failed_fetch_keeps_the_last_complete_snapshot():
+    """Transport failures preserve state; successful full snapshots may retract it."""
     all_events = mini_race()
     total = len(all_events)
+    replies = iter([all_events, None, all_events])
 
-    # Sequence: full → truncated (source blinks) → full again
-    slices = [all_events, all_events[:3], all_events]
-    runner = LiveRunner(_sliced_fetch(slices), poll_interval_s=2.0)
+    def fetch():
+        result = next(replies)
+        if result is None:
+            raise OSError("source unavailable")
+        return result
+
+    runner = LiveRunner(fetch, poll_interval_s=2.0)
 
     runner._poll_once()
     assert runner.status()["events_total"] == total, "poll 1 should have all events"
 
     runner._poll_once()
-    # Source returned only 3 events — but we must KEEP everything accumulated
-    assert runner.status()["events_total"] == total, (
-        "source truncation must not shrink _all — accumulated events are never lost"
-    )
-    assert runner.status()["new_last_poll"] == 0, (
-        "truncated poll should report 0 new events (all 3 were already seen)"
-    )
-    assert runner.status()["data_quality"] == "good"
+    assert runner.status()["events_total"] == total
+    assert runner.state_now()["lap"] == 3
+    assert runner.status()["consecutive_failures"] == 1
 
     runner._poll_once()
     assert runner.status()["events_total"] == total
+    assert runner.status()["consecutive_failures"] == 0
 
 
 # ── /api/live/* thread-safety (sync handlers moved to async def) ──────────────

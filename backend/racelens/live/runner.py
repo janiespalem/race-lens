@@ -2,7 +2,7 @@
 
 Architectural invariant (by design):
     The engine is NEVER mutated between polls.  Each poll rebuilds it from
-    scratch using ALL accumulated events.  init(5 k events) ≈ 3 ms → negligible.
+    scratch using the latest full snapshot. init(5 k events) ≈ 3 ms → negligible.
     This gives us deduplication and determinism for free.
 """
 from __future__ import annotations
@@ -46,7 +46,7 @@ class LiveRunner:
         self._fetch = fetch_events
         self._interval = poll_interval_s
 
-        # Accumulated events: event_id → Event
+        # Latest full snapshot: event_id → Event
         self._all: dict[str, Event] = {}
         self._next_seq: int = 0        # monotonic ingest_seq counter across polls
 
@@ -103,21 +103,22 @@ class LiveRunner:
         return self._polls
 
     def status(self) -> dict[str, Any]:
+        engine = self.engine
         stale_after = max(30.0, self._interval * 3)
         no_new_for = (
             time.time() - self._last_new_event_unix
             if self._last_new_event_unix is not None else None
         )
         session_running = False
-        if self.engine is not None and self.engine.events:
-            for event in reversed(self.engine.events):
+        if engine is not None and engine.events:
+            for event in reversed(engine.events):
                 if event.type == "SessionStatusChanged":
                     session_running = event.payload.get("status") in _ACTIVE_SESSION_STATUSES
                     break
                 if event.type == "SessionStarted":
                     session_running = True
                     break
-        if self._consecutive_failures >= 5 or (self._polls >= 3 and self.engine is None) or (
+        if self._consecutive_failures >= 5 or (self._polls >= 3 and engine is None) or (
             session_running and no_new_for is not None and no_new_for > stale_after
         ):
             dq = "stalled"
@@ -138,10 +139,11 @@ class LiveRunner:
 
     def state_now(self) -> dict[str, Any]:
         """Return engine state at the latest known session time."""
-        if self.engine is None or not self.engine.events:
+        engine = self.engine
+        if engine is None or not engine.events:
             return {"error": "no data yet", "status": self.status()}
-        at_ms = self.engine.events[-1].session_time_ms
-        state = self.engine.state_at(at_ms)
+        at_ms = engine.events[-1].session_time_ms
+        state = engine.state_at(at_ms)
         state["live_status"] = self.status()
         return state
 
@@ -159,25 +161,32 @@ class LiveRunner:
             self._last_error = type(exc).__name__
             return
 
+        snapshot = {e.event_id: e for e in events}
         new_count = 0
-        for e in events:
-            if e.event_id not in self._all:
+        for e in snapshot.values():
+            previous = self._all.get(e.event_id)
+            if previous is None:
                 e.ingest_seq = self._next_seq
                 self._next_seq += 1
-                self._all[e.event_id] = e
                 new_count += 1
+            else:
+                e.ingest_seq = previous.ingest_seq
 
-        if self._all and (new_count or self.engine is None):
-            self.engine = ReplayEngine(self._all.values())
-        if new_count:
+        changed = snapshot != self._all
+        self._all = snapshot
+        if changed:
+            self.engine = ReplayEngine(snapshot.values()) if snapshot else None
             self._last_new_event_unix = time.time()
 
         # First sighting of a "finished" status starts the auto-stop countdown
         # (checked once per poll in _loop, no extra thread/timer needed).
-        if self._finish_seen_at is None and any(
+        finished = any(
             e.type == "SessionStatusChanged" and e.payload.get("status") == "finished"
             for e in events
-        ):
+        )
+        if not finished:
+            self._finish_seen_at = None
+        elif self._finish_seen_at is None:
             self._finish_seen_at = time.time()
 
         self._consecutive_failures = 0

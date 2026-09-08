@@ -359,6 +359,77 @@ def test_transient_retired_pulse_is_ignored(tmp_path):
     assert not any(event.type == "RetirementDetected" for event in events)
 
 
+@pytest.mark.parametrize("message,status", [
+    ("SAFETY CAR DEPLOYED", "safety_car"),
+    ("VSC DEPLOYED", "vsc"),
+])
+@pytest.mark.parametrize("reconnect", [False, True])
+def test_started_keyframe_does_not_end_neutralization(tmp_path, message, status, reconnect):
+    control = {"Messages": [{
+        "Utc": "2026-09-06T13:01:00Z", "Category": "SafetyCar", "Message": message,
+    }]}
+    rows = [
+        ["SessionStatus", {"Status": "Started"}, "2026-09-06T13:00:00Z"],
+        ["RaceControlMessages", control, "2026-09-06T13:01:00Z"],
+    ] if reconnect else []
+    rows += [
+        ["SessionData", {"StatusSeries": [{
+            "SessionStatus": "Started", "Utc": "2026-09-06T13:00:00Z",
+        }]}, ""],
+        ["SessionStatus", {"Status": "Started"}, ""],
+        ["RaceControlMessages", control, ""],
+        ["TimingData", {"Lines": {"1": {"Position": "1", "NumberOfLaps": 2}}},
+         "2026-09-06T13:02:00Z"],
+    ]
+    feed = tmp_path / "reconnect.txt"
+    feed.write_text("\n".join(map(repr, rows)) + "\n", encoding="utf-8")
+
+    state = ReplayEngine(ingest_f1live(str(feed))).state_at(120_000)
+
+    assert state["session_status"] == status
+
+
+@pytest.mark.parametrize("unavailable", ["1L", "", None, "NaN", "Infinity"])
+def test_explicit_unavailable_gap_clears_previous_seconds(tmp_path, unavailable):
+    rows = [
+        ["SessionStatus", {"Status": "Started"}, "2026-09-06T13:00:00Z"],
+        ["TimingData", {"Lines": {"1": {"Position": "1"}, "4": {
+            "Position": "2", "GapToLeader": "+2.0",
+            "IntervalToPositionAhead": {"Value": "+0.7"},
+        }}}, "2026-09-06T13:01:00Z"],
+        ["TimingData", {"Lines": {"4": {
+            "GapToLeader": unavailable, "IntervalToPositionAhead": {"Value": unavailable},
+        }}}, "2026-09-06T13:02:00Z"],
+    ]
+    feed = tmp_path / "gap.txt"
+    feed.write_text("\n".join(map(repr, rows)) + "\n", encoding="utf-8")
+
+    driver = ReplayEngine(ingest_f1live(str(feed))).state_at(120_000)["drivers"]["4"]
+
+    assert driver["gap_s"] is None
+    assert driver["interval_s"] is None
+
+
+def test_partial_interval_metadata_preserves_previous_seconds(tmp_path):
+    rows = [
+        ["SessionStatus", {"Status": "Started"}, "2026-09-06T13:00:00Z"],
+        ["TimingData", {"Lines": {"1": {"Position": "1"}, "4": {
+            "Position": "2", "GapToLeader": "+2.0",
+            "IntervalToPositionAhead": {"Value": "+0.7"},
+        }}}, "2026-09-06T13:01:00Z"],
+        ["TimingData", {"Lines": {"4": {
+            "IntervalToPositionAhead": {"Catching": True},
+        }}}, "2026-09-06T13:02:00Z"],
+    ]
+    feed = tmp_path / "partial-gap.txt"
+    feed.write_text("\n".join(map(repr, rows)) + "\n", encoding="utf-8")
+
+    driver = ReplayEngine(ingest_f1live(str(feed))).state_at(120_000)["drivers"]["4"]
+
+    assert driver["gap_s"] == 2.0
+    assert driver["interval_s"] == 0.7
+
+
 def test_rapid_position_loss_under_yellow_reports_trouble_but_not_pit_stop(tmp_path):
     feed = tmp_path / "driver-trouble.txt"
     feed.write_text("\n".join([

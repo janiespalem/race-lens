@@ -113,7 +113,8 @@ def _parse_gap_s(value: Any) -> float | None:
         return None
     v = value.strip().lstrip("+")
     try:
-        return float(v)
+        gap = float(v)
+        return gap if math.isfinite(gap) else None
     except ValueError:
         return None
 
@@ -329,12 +330,12 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
 
             if "GapToLeader" in patch:
                 gap = _parse_gap_s(patch["GapToLeader"])
-                if gap is not None:
-                    events.append(event(sid, "GapUpdated", t_ms, d, gap_s=gap))
+                events.append(event(sid, "GapUpdated", t_ms, d, gap_s=gap))
 
             if "IntervalToPositionAhead" in patch:
-                iv = _parse_gap_s(patch["IntervalToPositionAhead"])
-                if iv is not None:
+                value = patch["IntervalToPositionAhead"]
+                if not isinstance(value, dict) or "Value" in value:
+                    iv = _parse_gap_s(value)
                     events.append(event(sid, "IntervalUpdated", t_ms, d, interval_s=iv))
 
             if "LastLapTime" in patch:
@@ -433,6 +434,10 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
                 session_path = path
         elif cat == "SessionStatus":
             status = _STATUS_MAP.get(str(payload.get("Status")))
+            # A join/reconnect keyframe says the session is running, not that
+            # SC/VSC ended now. Only timestamped Started rows are transitions.
+            if status == "started" and t_posix is None:
+                continue
             if status:
                 if status == "started" and last_status == "red_flag":
                     status = "formation"

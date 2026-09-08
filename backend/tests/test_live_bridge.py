@@ -893,6 +893,88 @@ def test_live_stream_sets_sse_buffering_headers(monkeypatch):
     assert response.headers["x-accel-buffering"] == "no"
 
 
+def test_local_live_stream_replaces_same_size_pass_cache_and_keeps_frame_consistent(monkeypatch):
+    import racelens.api as api
+    from racelens.events.models import event
+    from racelens.live.runner import LiveRunner
+
+    baseline = [
+        event("test", "SessionStarted", 0),
+        event("test", "PositionChanged", 0, "A", position=1),
+        event("test", "PositionChanged", 0, "B", position=2),
+        event("test", "LapCompleted", 90_000, "A", lap=1, lap_time_ms=90_000),
+    ]
+    snapshots = iter([
+        baseline + [
+            event("test", "PositionChanged", 200_000, "B", position=1),
+            event("test", "PositionChanged", 200_000, "A", position=2),
+        ],
+        baseline + [
+            event("test", "PositionChanged", 200_000, "A", position=1),
+            event("test", "PositionChanged", 200_000, "B", position=2),
+        ],
+    ])
+    runner = LiveRunner(lambda: next(snapshots))
+    runner._poll_once()
+    monkeypatch.setattr(api, "_live", runner)
+    detect_passes = api.detect_passes
+    first = True
+
+    def detect_during_correction(events):
+        nonlocal first
+        result = detect_passes(events)
+        if first:
+            first = False
+            runner._poll_once()
+        return result
+
+    monkeypatch.setattr(api, "detect_passes", detect_during_correction)
+
+    async def read_frames():
+        runner._task = asyncio.current_task()
+        response = await api.live_stream(tick_s=0, lang="en", level="pro")
+        try:
+            return [json.loads((await anext(response.body_iterator))[6:]) for _ in range(2)]
+        finally:
+            await response.body_iterator.aclose()
+            runner._task = None
+
+    before, after = asyncio.run(read_frames())
+    assert before["recent_passes"] and before["classification"] == ["B", "A"]
+    assert after["recent_passes"] == []
+    assert after["classification"] == ["A", "B"]
+
+
+@pytest.mark.parametrize(("endpoint", "params"), [
+    ("live_feed", {"lang": "en", "limit": 30}),
+    ("live_stints", {}),
+    ("live_forecast", {"laps": 10}),
+    ("live_win_prob", {}),
+    ("live_battles", {}),
+    ("live_simulate_pit", {"driver": "VER"}),
+])
+def test_local_live_endpoints_keep_captured_engine_during_empty_poll(
+    monkeypatch, endpoint, params,
+):
+    import racelens.api as api
+    from racelens.live.runner import LiveRunner
+    from tests.test_replay import mini_race
+
+    runner = LiveRunner(lambda: mini_race())
+    runner._poll_once()
+    reads = [runner.engine]
+    monkeypatch.setattr(api, "_live", runner)
+    monkeypatch.setattr(
+        LiveRunner, "engine", property(lambda self: reads.pop() if reads else None),
+        raising=False,
+    )
+
+    result = getattr(api, endpoint)(**params)
+    if endpoint != "live_stints":
+        result = asyncio.run(result)
+    assert isinstance(result, list if endpoint == "live_feed" else dict)
+
+
 @pytest.mark.parametrize(("messages", "expected_statuses"), [
     pytest.param(
         ["SAFETY CAR DEPLOYED", "SAFETY CAR IN THIS LAP", "TRACK CLEAR"],
