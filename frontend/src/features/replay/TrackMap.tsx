@@ -5,7 +5,7 @@ import type { Battle, DriverState, RecentPass } from '../../api/types'
 import { battlePair } from '../../lib/battles'
 import type { PositionsData } from '../../lib/liveGaps'
 import { buildPathD, startFinishLine } from '../../lib/trackGeometry'
-import { hasFinishedRace } from '../../lib/trackInterpolation'
+import { hasFinishedRace, sectorBoundaryMarkers } from '../../lib/trackInterpolation'
 import { isRetryableLiveTrackError, LIVE_TRACK_RETRY_MS } from '../../lib/liveTrack'
 import { teamColor } from './teamColors'
 import { useTrackAnimation } from './useTrackAnimation'
@@ -266,6 +266,19 @@ export const TrackMap = React.memo(function TrackMap({
                 {c.number}
               </text>
             ))}
+            {/* Timing sectors, not marshal zones. Older archives simply omit these. */}
+            {sectorBoundaryMarkers(trackData.progress_points, trackData.sector_boundaries)
+              .map(({ sector, position: [x, y] }) => (
+                <g key={`sector-${sector}`}>
+                  <title>{lang === 'ru' ? `Конец сектора ${sector} · по телеметрии` : `End of sector ${sector} · telemetry mapped`}</title>
+                  <circle cx={x} cy={y} r={4} fill="#080a10" stroke="#b7dfed" strokeWidth={1.5} />
+                  <text
+                    x={x + 8} y={y + 13} fill="#b7dfed" fontSize={11}
+                    fontFamily="'Barlow Condensed', sans-serif" fontWeight={700}
+                    stroke="#080a10" strokeWidth={3} paintOrder="stroke" pointerEvents="none"
+                  >{`S${sector}/S${sector === 3 ? 1 : sector + 1}`}</text>
+                </g>
+              ))}
           </>
         )}
 

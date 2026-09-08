@@ -108,3 +108,21 @@ export function resolveTrackPosition(
 ): TrackPoint | null {
   return progressPosition ?? xyPosition
 }
+
+/** Timing-sector boundaries share the exact progress path used by the cars. */
+export function sectorBoundaryMarkers(
+  path: TrackPoint[] | undefined,
+  boundaries: { sector: number; progress: number }[] | undefined,
+): { sector: number; position: TrackPoint }[] {
+  if (!path || path.length < 2 || !Array.isArray(boundaries) || boundaries.length !== 2) return []
+  const [first, second] = boundaries
+  if (
+    first?.sector !== 1 || second?.sector !== 2 ||
+    !Number.isFinite(first.progress) || !Number.isFinite(second.progress) ||
+    !(0 < first.progress && first.progress < second.progress && second.progress < 1)
+  ) return []
+  return [...boundaries, { sector: 3, progress: 0 }].flatMap(({ sector, progress }) => {
+    const position = progressPathPosition([progress], path, 0)
+    return position?.every(Number.isFinite) ? [{ sector, position }] : []
+  })
+}
