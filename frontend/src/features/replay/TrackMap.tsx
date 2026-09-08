@@ -86,9 +86,22 @@ export const TrackMap = React.memo(function TrackMap({
   const [flashingIds, setFlashingIds] = useState<Set<string>>(new Set())
   const seenPassKeysRef = useRef<Set<string>>(new Set())
   const flashTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const previousFrameRef = useRef<{ atMs: number; sessionId: string | null; live: boolean } | null>(null)
 
   useEffect(() => {
+    const previous = previousFrameRef.current
+    // Rewind starts a new replay viewing epoch. Live timestamp corrections do
+    // not: replaying their recent passes would flash the same overtake twice.
+    if (previous && (previous.sessionId !== sessionId || previous.live !== live || (!live && atMs < previous.atMs))) {
+      seenPassKeysRef.current.clear()
+      for (const timer of flashTimersRef.current.values()) clearTimeout(timer)
+      flashTimersRef.current.clear()
+      setFlashingIds((ids) => ids.size ? new Set() : ids)
+    }
+    previousFrameRef.current = { atMs, sessionId, live }
     for (const p of recentPasses) {
+      // A seek can reach the map before the old recentPasses array is replaced.
+      if (!live && p.at_ms > atMs) continue
       const key = `${p.ahead}:${p.at_ms}`
       if (seenPassKeysRef.current.has(key)) continue
       seenPassKeysRef.current.add(key)
@@ -101,8 +114,9 @@ export const TrackMap = React.memo(function TrackMap({
       })
 
       const existingTimer = flashTimersRef.current.get(p.ahead)
-      if (existingTimer) clearTimeout(existingTimer)
+      if (existingTimer !== undefined) clearTimeout(existingTimer)
       const timer = setTimeout(() => {
+        if (flashTimersRef.current.get(p.ahead) !== timer) return
         setFlashingIds((prev) => {
           if (!prev.has(p.ahead)) return prev
           const next = new Set(prev)
@@ -113,13 +127,17 @@ export const TrackMap = React.memo(function TrackMap({
       }, OVERTAKE_FLASH_MS)
       flashTimersRef.current.set(p.ahead, timer)
     }
-  }, [recentPasses])
+  }, [atMs, live, recentPasses, sessionId])
 
   // Clear any pending flash timers on unmount so they never fire against a dead component.
   useEffect(() => {
     const timers = flashTimersRef.current
+    const seen = seenPassKeysRef.current
     return () => {
       for (const t of timers.values()) clearTimeout(t)
+      timers.clear()
+      seen.clear()
+      previousFrameRef.current = null
     }
   }, [])
 
