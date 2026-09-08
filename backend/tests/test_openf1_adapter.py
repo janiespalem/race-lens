@@ -316,6 +316,53 @@ def test_session_status_from_race_control():
     assert "finished" in status_values
 
 
+def test_prestart_repeated_flags_keep_identity_and_deduplicate_source_repeats(tmp_path):
+    from racelens.events.models import dump_jsonl, load_jsonl
+    from racelens.recorder.postprocess import validate_fixture
+
+    rows = [
+        {"date": "2024-05-26T12:59:57.000", "message": "VSC DEPLOYED"},
+        {"date": "2024-05-26T12:59:58.000", "message": "TRACK CLEAR"},
+        {"date": "2024-05-26T12:59:59.000", "message": "VSC DEPLOYED"},
+        {"date": "2024-05-26T12:59:59.000", "message": "VSC DEPLOYED"},
+    ]
+    events = _ingest({"/race_control": rows})
+    fixture = tmp_path / "race.jsonl"
+    fixture.write_text(dump_jsonl(events), encoding="utf-8")
+    assert validate_fixture(fixture) == len(events)
+    engine = ReplayEngine(load_jsonl(dump_jsonl(events)))
+    assert engine.state_at(0)["session_status"] == "vsc"
+    assert engine.duplicates_dropped == 2
+    assert [e.payload["status"] for e in engine.events if e.type == "SessionStatusChanged"] == [
+        "vsc", "started", "vsc",
+    ]
+    assert len([e for e in engine.events if e.type == "RaceControlMessage"]) == 3
+    assert all(e.session_time_ms >= 0 for e in events)
+    assert [e.event_id for e in events] == [
+        e.event_id for e in _ingest({"/race_control": rows})
+    ]
+
+
+def test_incremental_live_keeps_source_order_when_earlier_prestart_flag_arrives_late():
+    from racelens.live.runner import LiveRunner
+
+    rows = [
+        {"date": "2024-05-26T12:59:57.000", "message": "VSC DEPLOYED"},
+        {"date": "2024-05-26T12:59:58.000", "message": "TRACK CLEAR"},
+        {"date": "2024-05-26T12:59:59.000", "message": "VSC DEPLOYED"},
+    ]
+    ingester = _mod.OpenF1IncrementalIngester(_SESSION_KEY)
+    runner = LiveRunner(ingester.fetch)
+    for snapshot in ([rows[0], rows[2]], rows, rows):
+        with patch.object(_mod, "_get", _make_mock_get({"/race_control": snapshot})):
+            runner._poll_once()
+        assert runner.state_now()["session_status"] == "vsc"
+    assert runner.status()["new_last_poll"] == 0
+    assert [e.payload["status"] for e in runner.engine.events if e.type == "SessionStatusChanged"] == [
+        "vsc", "started", "vsc",
+    ]
+
+
 def test_empty_endpoints_dont_crash():
     """If all endpoints return empty, ingest should return only SessionStarted."""
     empty: dict = {

@@ -113,7 +113,7 @@ def test_race_control_preserves_source_order_when_event_times_collide(
     monkeypatch, times, rebase_ms,
 ):
     import racelens.adapters.fastf1_adapter as adapter
-    from racelens.events.models import dump_jsonl, load_jsonl, make_event_id
+    from racelens.events.models import dump_jsonl, load_jsonl
 
     class Rows(list):
         def iterrows(self):
@@ -127,14 +127,51 @@ def test_race_control_preserves_source_order_when_event_times_collide(
     events = adapter._race_control_to_events(
         rows, "2026_barcelona_grand_prix_r", None, "fastf1",
     )
-    for item in events:
-        item.session_time_ms = max(item.session_time_ms - rebase_ms, 0)
-        item.event_id = make_event_id(
-            item.session_id, item.type, item.session_time_ms, item.driver_id, item.payload,
-        )
+    adapter._rebase_events(events, rebase_ms)
     events.sort(key=lambda item: (item.session_time_ms, item.event_id))
 
     restored = load_jsonl(dump_jsonl(events))
     state = ReplayEngine(restored).state_at(max(times[-1] - rebase_ms, 0))
     assert state["session_status"] == "started"
     assert all("ingest_seq" not in item.payload for item in restored)
+
+
+@pytest.mark.parametrize("rebase_ms", [4000, 3000, 500])
+def test_repeated_flag_transitions_survive_rebasing_and_real_duplicates_do_not(
+    monkeypatch, rebase_ms, tmp_path,
+):
+    import racelens.adapters.fastf1_adapter as adapter
+    from racelens.events.models import dump_jsonl, load_jsonl
+    from racelens.recorder.postprocess import validate_fixture
+
+    class Rows(list):
+        def iterrows(self):
+            return enumerate(self)
+
+    rows = Rows([
+        {"Time": 1000, "Message": "VSC DEPLOYED"},
+        {"Time": 2000, "Message": "TRACK CLEAR"},
+        {"Time": 3000, "Message": "VSC DEPLOYED"},
+        {"Time": 3000, "Message": "VSC DEPLOYED"},  # actual provider duplicate
+    ])
+    monkeypatch.setattr(adapter, "_timestamp_to_session_ms", lambda time, _: time)
+
+    def normalize():
+        events = adapter._race_control_to_events(rows, "race", None, "fastf1")
+        adapter._rebase_events(events, rebase_ms)
+        return sorted(events, key=lambda item: (item.session_time_ms, item.event_id))
+
+    events = normalize()
+    fixture = tmp_path / "race.jsonl"
+    fixture.write_text(dump_jsonl(events), encoding="utf-8")
+    assert validate_fixture(fixture, min_laps=0, min_drivers=0) == len(events)
+    restored = load_jsonl(dump_jsonl(events))
+    engine = ReplayEngine(restored)
+    assert engine.state_at(max(3000 - rebase_ms, 0))["session_status"] == "vsc"
+    assert engine.duplicates_dropped == 2
+    assert [e.payload["status"] for e in engine.events if e.type == "SessionStatusChanged"] == [
+        "vsc", "started", "vsc",
+    ]
+    assert len([e for e in engine.events if e.type == "RaceControlMessage"]) == 3
+    assert all(e.session_time_ms >= 0 for e in restored)
+    assert [e.event_id for e in events] == [e.event_id for e in normalize()]
