@@ -1,3 +1,4 @@
+import type { Lang } from '../features/replay/replayTypes'
 import type { LiveStatusResult } from '../api/client'
 
 export type LivePhase =
@@ -66,68 +67,69 @@ export function livePresentation(
   hasState: boolean,
   streamError: string | null,
   now = Date.now(),
+  lang: Lang = 'en',
 ): LivePresentation {
   if (status?.status === 'idle') {
-    return { phase: 'connecting', badge: 'LIVE OFF', detail: 'NO LIVE SESSION' }
+    return { phase: 'connecting', badge: (lang === 'ru' ? 'ЭФИР ВЫКЛЮЧЕН' : 'LIVE OFF'), detail: (lang === 'ru' ? 'НЕТ ПРЯМОГО ЭФИРА' : 'NO LIVE SESSION') }
   }
   if (status?.status === 'failed') {
     return {
       phase: 'failed',
-      badge: 'LIVE FAILED',
-      detail: status.failure ?? 'REPLAY PREPARATION FAILED',
+      badge: (lang === 'ru' ? 'ОШИБКА ЭФИРА' : 'LIVE FAILED'),
+      detail: lang === 'ru' ? 'НЕ УДАЛОСЬ ПОДГОТОВИТЬ ПОВТОР' : status.failure ?? 'REPLAY PREPARATION FAILED',
     }
   }
   if (status?.status === 'finishing' || status?.status === 'replay_ready') {
     return {
       phase: 'preparing',
-      badge: 'REPLAY PREPARING',
-      detail: 'LIVE ENDED · PUBLISHING REPLAY',
+      badge: (lang === 'ru' ? 'ПОДГОТОВКА ПОВТОРА' : 'REPLAY PREPARING'),
+      detail: (lang === 'ru' ? 'ЭФИР ЗАВЕРШЁН · ПУБЛИКУЕМ ПОВТОР' : 'LIVE ENDED · PUBLISHING REPLAY'),
     }
   }
   if (status?.capture_alive === false) {
-    return { phase: 'stalled', badge: 'STALLED', detail: 'CAPTURE STOPPED · RESTART LIVE' }
+    return { phase: 'stalled', badge: (lang === 'ru' ? 'НЕТ ОБНОВЛЕНИЙ' : 'STALLED'), detail: (lang === 'ru' ? 'ЗАПИСЬ ОСТАНОВЛЕНА · ПЕРЕЗАПУСТИТЕ ЭФИР' : 'CAPTURE STOPPED · RESTART LIVE') }
   }
   const expiresAt = status?.expires_at ? Date.parse(status.expires_at) : Number.NaN
   if (!Number.isNaN(expiresAt) && expiresAt <= now) {
     return {
       phase: 'stalled',
-      badge: 'STALLED',
-      detail: 'SNAPSHOT STALE · BACKEND STALLED',
+      badge: (lang === 'ru' ? 'НЕТ ОБНОВЛЕНИЙ' : 'STALLED'),
+      detail: (lang === 'ru' ? 'УСТАРЕВШИЙ КАДР · СЕРВЕР НЕ ОБНОВЛЯЕТСЯ' : 'SNAPSHOT STALE · BACKEND STALLED'),
     }
   }
   if (status?.data_quality === 'stalled') {
-    return { phase: 'stalled', badge: 'STALLED', detail: 'NO NEW DATA · BACKEND STALLED' }
+    return { phase: 'stalled', badge: (lang === 'ru' ? 'НЕТ ОБНОВЛЕНИЙ' : 'STALLED'), detail: (lang === 'ru' ? 'НЕТ НОВЫХ ДАННЫХ · СЕРВЕР НЕ ОБНОВЛЯЕТСЯ' : 'NO NEW DATA · BACKEND STALLED') }
   }
   if (streamError) {
     return {
       phase: 'reconnecting',
-      badge: 'RECONNECTING',
-      detail: 'STREAM LOST · RETRYING AUTOMATICALLY',
+      badge: (lang === 'ru' ? 'ПЕРЕПОДКЛЮЧЕНИЕ' : 'RECONNECTING'),
+      detail: (lang === 'ru' ? 'ПОТОК ПРЕРВАН · ПОВТОРЯЕМ ПОДКЛЮЧЕНИЕ' : 'STREAM LOST · RETRYING AUTOMATICALLY'),
     }
   }
   if (status && !status.is_running) {
-    return { phase: 'ended', badge: 'ENDED', detail: 'SESSION FEED ENDED' }
+    return { phase: 'ended', badge: (lang === 'ru' ? 'ЗАВЕРШЁН' : 'ENDED'), detail: (lang === 'ru' ? 'ПОТОК СЕССИИ ЗАВЕРШЁН' : 'SESSION FEED ENDED') }
   }
   if (!hasState) {
     if (status?.is_running && status.events_total === 0) {
       return {
         phase: 'waiting',
-        badge: 'WAITING',
-        detail: 'FEED CONNECTED · WAITING FOR FIRST TIMING PACKET',
+        badge: (lang === 'ru' ? 'ОЖИДАНИЕ' : 'WAITING'),
+        detail: (lang === 'ru' ? 'ПОДКЛЮЧЕНО · ЖДЁМ ПЕРВЫЙ ПАКЕТ ХРОНОМЕТРАЖА' : 'FEED CONNECTED · WAITING FOR FIRST TIMING PACKET'),
       }
     }
-    return { phase: 'connecting', badge: 'CONNECTING', detail: 'OPENING LIVE TIMING' }
+    return { phase: 'connecting', badge: (lang === 'ru' ? 'ПОДКЛЮЧЕНИЕ' : 'CONNECTING'), detail: (lang === 'ru' ? 'ПОДКЛЮЧЕНИЕ К ХРОНОМЕТРАЖУ' : 'OPENING LIVE TIMING') }
   }
   if (status?.data_quality === 'degraded') {
-    return { phase: 'degraded', badge: 'DELAYED', detail: 'LIVE DATA IS ARRIVING LATE' }
+    return { phase: 'degraded', badge: (lang === 'ru' ? 'С ЗАДЕРЖКОЙ' : 'DELAYED'), detail: (lang === 'ru' ? 'ДАННЫЕ ЭФИРА ПОСТУПАЮТ С ЗАДЕРЖКОЙ' : 'LIVE DATA IS ARRIVING LATE') }
   }
   const generatedAt = status?.generated_at ? Date.parse(status.generated_at) : Number.NaN
   const snapshotAge = Number.isNaN(generatedAt) ? null : Math.max(0, Math.round((now - generatedAt) / 1000))
   return {
     phase: 'live',
-    badge: '● LIVE',
+    badge: (lang === 'ru' ? '● ЭФИР' : '● LIVE'),
     detail: status?.source === 'remote'
-      ? `SNAPSHOT ${snapshotAge ?? '—'}S OLD · PLAY-FORWARD`
-      : status ? `TIMING ACTIVE · POLL #${status.poll_count}` : 'TIMING ACTIVE',
+      ? lang === 'ru' ? `ВОЗРАСТ КАДРА: ${snapshotAge ?? '—'} С · ВОСПРОИЗВЕДЕНИЕ ВПЕРЁД` : `SNAPSHOT ${snapshotAge ?? '—'}S OLD · PLAY-FORWARD`
+      : status ? (lang === 'ru' ? `ХРОНОМЕТРАЖ АКТИВЕН · ОПРОС №${status.poll_count}` : `TIMING ACTIVE · POLL #${status.poll_count}`) : (lang === 'ru' ? 'ХРОНОМЕТРАЖ АКТИВЕН' : 'TIMING ACTIVE'),
   }
 }

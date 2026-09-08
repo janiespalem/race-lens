@@ -9,8 +9,10 @@ import { hasFinishedRace } from '../../lib/trackInterpolation'
 import { isRetryableLiveTrackError, LIVE_TRACK_RETRY_MS } from '../../lib/liveTrack'
 import { teamColor } from './teamColors'
 import { useTrackAnimation } from './useTrackAnimation'
+import type { Lang } from './replayTypes'
 
 type Props = {
+  lang?: Lang
   sessionId: string | null
   atMs: number
   playing: boolean
@@ -42,10 +44,10 @@ const PIT_BOX_HEIGHT = 60
 const PIT_BOX_CAR_Y = PIT_BOX_Y_TOP + 38
 const PIT_CAR_SPACING = 26
 
-function statusWatermark(status: string): { text: string; color: string } | null {
-  if (status === 'red_flag') return { text: 'RED FLAG', color: '#cc0000' }
-  if (status === 'safety_car') return { text: 'SAFETY CAR', color: '#f2a900' }
-  if (status === 'vsc') return { text: 'VIRTUAL SC', color: '#f2a900' }
+function statusWatermark(status: string, lang: Lang): { text: string; color: string } | null {
+  if (status === 'red_flag') return { text: lang === 'ru' ? 'КРАСНЫЙ ФЛАГ' : 'RED FLAG', color: '#cc0000' }
+  if (status === 'safety_car') return { text: lang === 'ru' ? 'SC' : 'SAFETY CAR', color: '#f2a900' }
+  if (status === 'vsc') return { text: lang === 'ru' ? 'VSC' : 'VIRTUAL SC', color: '#f2a900' }
   return null
 }
 
@@ -71,7 +73,7 @@ function fmtElapsed(ms: number): string {
 }
 
 export const TrackMap = React.memo(function TrackMap({
-  sessionId, atMs, playing, playbackSpeed, drivers, classification, totalLaps, sessionStatus, neutralizationStartMs,
+  lang = 'en', sessionId, atMs, playing, playbackSpeed, drivers, classification, totalLaps, sessionStatus, neutralizationStartMs,
   selectedIds = [], positionsData, battles = [], recentPasses = [], live = false,
 }: Props) {
   const [trackData, setTrackData] = useState<TrackData | null>(null)
@@ -156,7 +158,7 @@ export const TrackMap = React.memo(function TrackMap({
   }, [live, sessionId])
 
   const status = sessionStatus ?? ''
-  const watermark = statusWatermark(status)
+  const watermark = statusWatermark(status, lang)
   const trackStroke = trackStrokeColor(status)
   const trackShadowFilter = trackShadow(status)
   const elapsedTimer = watermark && neutralizationStartMs != null
@@ -192,7 +194,7 @@ export const TrackMap = React.memo(function TrackMap({
             fontFamily="'Barlow Condensed', sans-serif"
             letterSpacing="0.2em"
           >
-            NO TRACK DATA
+            {lang === 'ru' ? 'НЕТ ДАННЫХ ТРАССЫ' : 'NO TRACK DATA'}
           </text>
         )}
 
@@ -273,7 +275,7 @@ export const TrackMap = React.memo(function TrackMap({
               fontWeight={700}
               letterSpacing="0.18em"
             >
-              PIT LANE
+              {lang === 'ru' ? 'ПИТ-ЛЕЙН' : 'PIT LANE'}
             </text>
             {/* Count badge */}
             {pitDrivers.length > 0 && (
@@ -286,7 +288,7 @@ export const TrackMap = React.memo(function TrackMap({
                 fontWeight={600}
                 letterSpacing="0.08em"
               >
-                {pitDrivers.length} IN PITS
+                {lang === 'ru' ? `В БОКСАХ: ${pitDrivers.length}` : `${pitDrivers.length} IN PITS`}
               </text>
             )}
           </g>
@@ -416,7 +418,9 @@ export const TrackMap = React.memo(function TrackMap({
         })}
       </svg>
 
-      <span className="note">{positionsData ? 'RECORDED TELEMETRY' : 'SCHEMATIC · INTERPOLATED'}</span>
+      <span className="note">{positionsData
+        ? (lang === 'ru' ? 'ЗАПИСАННАЯ ТЕЛЕМЕТРИЯ' : 'RECORDED TELEMETRY')
+        : (lang === 'ru' ? 'СХЕМА · ИНТЕРПОЛЯЦИЯ' : 'SCHEMATIC · INTERPOLATED')}</span>
     </div>
   )
 })

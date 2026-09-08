@@ -1,3 +1,5 @@
+import type { Lang } from './features/replay/replayTypes'
+import { viewerError } from './lib/viewerError'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { getCapabilities, listSessions, liveStart, liveStatus, liveStop } from './api/client'
@@ -72,13 +74,14 @@ function LiveStatusPill({
 type CenterTab = 'FEED' | 'PACE' | 'STRATEGY'
 
 type CenterTabsProps = {
+  lang: Lang
   activeTab: CenterTab
   showForecast: boolean
   showStrategy: boolean
   onTab: (t: CenterTab) => void
 }
 
-function CenterTabs({ activeTab, showForecast, showStrategy, onTab }: CenterTabsProps) {
+function CenterTabs({ lang, activeTab, showForecast, showStrategy, onTab }: CenterTabsProps) {
   const tabs: CenterTab[] = ['FEED']
   if (showStrategy) tabs.push('STRATEGY')
   if (showForecast) tabs.push('PACE')
@@ -91,7 +94,7 @@ function CenterTabs({ activeTab, showForecast, showStrategy, onTab }: CenterTabs
           type="button"
           className={`ctr-tab${activeTab === t ? ' ctr-tab-on' : ''}`}
           onClick={() => onTab(t)}
-        >{t}</button>
+        >{tabLabel(t, lang)}</button>
       ))}
     </div>
   )
@@ -102,6 +105,10 @@ function CenterTabs({ activeTab, showForecast, showStrategy, onTab }: CenterTabs
 type AppMode = 'replay' | 'live'
 type MobTab = 'TIMING' | 'MAP' | 'INSIGHTS' | 'FEED'
 const MOB_TABS: MobTab[] = ['TIMING', 'MAP', 'INSIGHTS', 'FEED']
+const tabLabel = (tab: string, lang: Lang): string => lang === 'ru' ? ({
+  TIMING: 'ХРОНОМЕТРАЖ', MAP: 'КАРТА', INSIGHTS: 'АНАЛИТИКА', FEED: 'ЛЕНТА',
+  PACE: 'ТЕМП', STRATEGY: 'СТРАТЕГИЯ', BATTLES: 'БОРЬБА', TRACK: 'ТРАССА',
+}[tab] ?? tab) : tab
 
 function useDesktopWorkspace() {
   const [desktop, setDesktop] = useState(() => window.matchMedia('(min-width: 1025px)').matches)
@@ -200,6 +207,7 @@ function App() {
   }, [mode, sessionId, isLiveActive])
 
   const replay = useReplay(source)
+  const lang = replay.lang
   const scrubReplay = replay.scrub
   const pauseReplay = replay.pause
   const [pocketApplied, setPocketApplied] = useState(false)
@@ -279,7 +287,7 @@ function App() {
         ))
         if (requested && !requestedSession) {
           setSessionNotice(
-            `Replay "${requested}" is unavailable · choose another session`,
+            requested,
           )
           const url = new URL(window.location.href)
           url.searchParams.delete('session')
@@ -448,7 +456,7 @@ function App() {
   }, [state])
 
   const sessionStatus = state?.session_status ?? 'started'
-  const liveView = livePresentation(liveStatusData, state !== null, replay.error)
+  const liveView = livePresentation(liveStatusData, state !== null, replay.error, Date.now(), lang)
   const restartAnnouncement = replay.feed.find((item) =>
     item.text.toUpperCase().includes('RACE WILL RESUME AT'),
   )?.text ?? null
@@ -458,8 +466,8 @@ function App() {
       <div className="error-screen wake-screen" role="status" aria-live="polite">
         <div>
           <span className="wake-pulse" />
-          <h2>Connecting</h2>
-          <p>Checking replay and Live availability.</p>
+          <h2>{(lang === 'ru' ? 'Подключение' : 'Connecting')}</h2>
+          <p>{(lang === 'ru' ? 'Проверяем доступность повторов и прямого эфира.' : 'Checking replay and Live availability.')}</p>
         </div>
       </div>
     )
@@ -469,10 +477,10 @@ function App() {
     return (
       <div className="error-screen">
         <div>
-          <h2>Race server is still asleep</h2>
-          <p>The free demo did not wake in time. Your selected race is safe.</p>
-          <button type="button" className="b" onClick={loadSessions}>RETRY</button>
-          <small>{sessionError}</small>
+          <h2>{(lang === 'ru' ? 'Сервер гонок ещё не проснулся' : 'Race server is still asleep')}</h2>
+          <p>{(lang === 'ru' ? 'Демоверсия не успела запуститься. Выбранная гонка сохранена.' : 'The free demo did not wake in time. Your selected race is safe.')}</p>
+          <button type="button" className="b" onClick={loadSessions}>{(lang === 'ru' ? 'ПОВТОРИТЬ' : 'RETRY')}</button>
+          <small>{viewerError(sessionError, lang)}</small>
         </div>
       </div>
     )
@@ -490,9 +498,9 @@ function App() {
   }
 
   // Build liveLabel for deck clock from current state lap
-  const liveLabel = state && currentLap > 0 ? `LAP ${currentLap}` : null
+  const liveLabel = state && currentLap > 0 ? `${lang === 'ru' ? 'КРУГ' : 'LAP'} ${currentLap}` : null
   const liveSessionName = state?.session_name ?? (
-    liveStatusData?.replay_session_id ? sessionLabel(liveStatusData.replay_session_id) : null
+    liveStatusData?.replay_session_id ? sessionLabel(liveStatusData.replay_session_id, lang) : null
   )
   const customDeskVisible = desktopWorkspace && (desk === 'custom' || customEditing)
   const projectionOn = customDeskVisible
@@ -509,7 +517,7 @@ function App() {
 
   const workspaceWidgets = {
     timing: (
-      <TimingTower
+      <TimingTower lang={lang}
         rows={rows}
         battles={replay.battles}
         selectedIds={selectedIds}
@@ -528,7 +536,7 @@ function App() {
             feed={replay.feed}
           />
         )}
-        <BattleIntelligence
+        <BattleIntelligence lang={lang}
           rows={rows}
           battles={replay.battles}
           currentLap={currentLap}
@@ -540,7 +548,7 @@ function App() {
       </>
     ),
     track: (
-      <TrackMap
+      <TrackMap lang={lang}
         key={mode === 'replay' ? sessionId ?? 'replay' : state?.session_id ?? 'live'}
         sessionId={mode === 'replay' ? sessionId : (state?.session_id ?? null)}
         atMs={replay.atMs}
@@ -560,8 +568,8 @@ function App() {
     ),
     insights: hasFocus ? (
       <div className="col col-insights col-focus">
-        <div className="label">DRIVER FOCUS</div>
-        <FocusPanel
+        <div className="label">{(lang === 'ru' ? 'ФОКУС НА ПИЛОТЕ' : 'DRIVER FOCUS')}</div>
+        <FocusPanel lang={lang}
           selectedIds={selectedIds}
           drivers={state?.drivers ?? {}}
           sessionId={mode === 'replay' ? sessionId : null}
@@ -573,7 +581,7 @@ function App() {
         />
       </div>
     ) : (
-      <InsightPanel
+      <InsightPanel lang={lang}
         key={mode === 'replay' ? sessionId ?? 'replay' : 'live'}
         insights={mode !== 'replay' || timeline?.session_id === sessionId ? replay.insights : []}
         commentary={mode !== 'replay' || timeline?.session_id === sessionId ? replay.commentary : []}
@@ -585,7 +593,7 @@ function App() {
       />
     ),
     feed: (
-      <RaceFeed
+      <RaceFeed lang={lang}
         key={mode === 'replay' ? sessionId : 'live'}
         items={replay.feed}
         loading={replay.loading}
@@ -595,7 +603,7 @@ function App() {
       />
     ),
     strategy: (mode === 'replay' ? !!sessionId : isLiveActive) ? (
-      <StintTimeline
+      <StintTimeline lang={lang}
         sessionId={mode === 'replay' ? sessionId : null}
         live={mode === 'live'}
         liveData={mode === 'live' ? state?.stints : null}
@@ -605,8 +613,8 @@ function App() {
       />
     ) : null,
     pace: mode === 'replay'
-      ? sessionId && <ForecastStrip sessionId={sessionId} atMs={replay.atMs} />
-      : isLiveActive && <ForecastStrip live atMs={replay.atMs} />,
+      ? sessionId && <ForecastStrip lang={lang} sessionId={sessionId} atMs={replay.atMs} />
+      : isLiveActive && <ForecastStrip lang={lang} live atMs={replay.atMs} />,
     highlights: mode === 'replay' && sessionId ? (
       <HighlightsPanel sessionId={sessionId} lang={replay.lang} untilMs={replay.atMs} onSeek={handleReplaySeek} />
     ) : null,
@@ -624,7 +632,7 @@ function App() {
 
   return (
     <>
-      <SessionCatalog
+      <SessionCatalog lang={lang}
         open={catalogOpen}
         landing={mode === 'replay' && !sessionId}
         initialSeason={initialCatalogSeason}
@@ -678,11 +686,11 @@ function App() {
         anchoredHighlights={!customDeskVisible || !customWorkspace.widgets.highlights.visible}
         anchoredDotd={!customDeskVisible || !customWorkspace.widgets.dotd.visible}
         sessionName={mode === 'live' ? liveSessionName : null}
-        companion={<CompanionLink target={pocketTarget} />}
+        companion={<CompanionLink lang={lang} target={pocketTarget} />}
       />
 
       {liveDecision.canManage && mode === 'live' && !isLiveActive && (
-        <LiveLobby
+        <LiveLobby lang={lang}
           signalrAvailable={signalrAvailable}
           onStart={async (y, c, sessionName, source) => {
             setLiveError(null)
@@ -697,7 +705,7 @@ function App() {
       {mode === 'live' && isLiveActive && (
         <div className="live-bar">
           <LiveStatusPill presentation={liveView} />
-          {liveError && <span className="live-err">{liveError}</span>}
+          {liveError && <span className="live-err">{viewerError(liveError, lang)}</span>}
           {liveDecision.canManage && (
             <button
               className="b danger"
@@ -717,7 +725,7 @@ function App() {
                 }
               }}
             >
-              {liveStopping ? 'STOPPING…' : 'STOP'}
+              {lang === 'ru' ? (liveStopping ? 'ОСТАНОВКА…' : 'СТОП') : (liveStopping ? 'STOPPING…' : 'STOP')}
             </button>
           )}
         </div>
@@ -727,15 +735,15 @@ function App() {
         <div className="error-screen wake-screen" role="status" aria-live="polite">
           <div>
             <span className="wake-pulse" />
-            <h2>{backendPhase === 'waking' ? 'Waking race server' : 'Connecting'}</h2>
-            <p>Free hosting may need up to a minute after inactivity.</p>
+            <h2>{lang === 'ru' ? (backendPhase === 'waking' ? 'Пробуждаем сервер гонок' : 'Подключение') : (backendPhase === 'waking' ? 'Waking race server' : 'Connecting')}</h2>
+            <p>{(lang === 'ru' ? 'После простоя бесплатному хостингу может потребоваться до минуты.' : 'Free hosting may need up to a minute after inactivity.')}</p>
           </div>
         </div>
       )}
 
       {((mode === 'replay' && sessionId) || isLiveActive) && (
         <>
-          <StatusStrip
+          <StatusStrip lang={lang}
             status={sessionStatus}
             lap={state?.lap ?? null}
             atMs={replay.atMs}
@@ -746,10 +754,10 @@ function App() {
             restartAtMs={state?.restart_at_ms ?? null}
           />
           {sessionNotice && (
-            <div className="feed-error" role="status">{sessionNotice}</div>
+            <div className="feed-error" role="status">{lang === 'ru' ? `Повтор «${sessionNotice}» недоступен · выберите другую сессию` : `Replay "${sessionNotice}" is unavailable · choose another session`}</div>
           )}
           {(replay.error || replay.feedError) && (
-            <div className="feed-error">{replay.error || replay.feedError}</div>
+            <div className="feed-error">{viewerError(replay.error || replay.feedError || '', lang)}</div>
           )}
 
           {/* Mobile tab bar — CSS shows only on <768px */}
@@ -761,13 +769,13 @@ function App() {
                   type="button"
                   className={`mob-tab${mobTab === tab ? ' mob-tab-on' : ''}`}
                   onClick={() => setMobTab(tab)}
-                >{tab === 'MAP' ? mobileCenter.toUpperCase() : tab}</button>
+                >{tabLabel(tab === 'MAP' ? mobileCenter.toUpperCase() : tab, lang)}</button>
               ))}
             </div>
           </div>
 
           {customDeskVisible ? (
-            <WorkspaceGrid
+            <WorkspaceGrid lang={lang}
               mode={mode}
               workspace={customWorkspace}
               editing={customEditing}
@@ -779,7 +787,7 @@ function App() {
             />
           ) : (
           <div className="wrap" data-mob-tab={mobTab}>
-            <TimingTower
+            <TimingTower lang={lang}
               rows={rows}
               battles={replay.battles}
               selectedIds={selectedIds}
@@ -798,8 +806,8 @@ function App() {
                 />
               )}
               <div className="center-heading">
-                <span>WORKSPACE</span>
-                <div className="center-switch" role="group" aria-label="Center workspace">
+                <span>{(lang === 'ru' ? 'РАБОЧАЯ ОБЛАСТЬ' : 'WORKSPACE')}</span>
+                <div className="center-switch" role="group" aria-label={(lang === 'ru' ? 'Центральная рабочая область' : 'Center workspace')}>
                   {(['battles', 'track'] as const).map((center) => (
                     <button
                       key={center}
@@ -808,13 +816,13 @@ function App() {
                       aria-pressed={mobileCenter === center}
                       onClick={() => handleMobileCenter(center)}
                     >
-                      {center.toUpperCase()}
+                      {tabLabel(center.toUpperCase(), lang)}
                     </button>
                   ))}
                 </div>
               </div>
               {mobileCenter === 'battles' ? (
-                <BattleIntelligence
+                <BattleIntelligence lang={lang}
                   rows={rows}
                   battles={replay.battles}
                   currentLap={currentLap}
@@ -824,7 +832,7 @@ function App() {
                   onSelectBattle={(ids) => handleWidgetAction('battle', ids)}
                 />
               ) : (
-                <TrackMap
+                <TrackMap lang={lang}
                   key={mode === 'replay' ? sessionId ?? 'replay' : state?.session_id ?? 'live'}
                   sessionId={mode === 'replay' ? sessionId : (state?.session_id ?? null)}
                   atMs={replay.atMs}
@@ -844,7 +852,7 @@ function App() {
               )}
               {/* Center keeps its workspace and tabs while driver focus moves right. */}
               <div className="ctr-bottom">
-                <CenterTabs
+                <CenterTabs lang={lang}
                   activeTab={centerTab}
                   showForecast={projection && (mode === 'replay' ? !!sessionId : isLiveActive)}
                   showStrategy={mode === 'replay' ? !!sessionId : isLiveActive}
@@ -852,7 +860,7 @@ function App() {
                 />
                 <div className="ctr-pane">
                   {centerTab === 'FEED' && (
-                    <RaceFeed
+                    <RaceFeed lang={lang}
                       key={mode === 'replay' ? sessionId : 'live'}
                       items={replay.feed}
                       loading={replay.loading}
@@ -862,7 +870,7 @@ function App() {
                     />
                   )}
                   {centerTab === 'STRATEGY' && (mode === 'replay' ? !!sessionId : isLiveActive) && (
-                    <StintTimeline
+                    <StintTimeline lang={lang}
                       sessionId={mode === 'replay' ? sessionId : null}
                       live={mode === 'live'}
                       liveData={mode === 'live' ? state?.stints : null}
@@ -873,8 +881,8 @@ function App() {
                   )}
                   {centerTab === 'PACE' && projection && (
                     mode === 'replay'
-                      ? sessionId && <ForecastStrip sessionId={sessionId} atMs={replay.atMs} />
-                      : isLiveActive && <ForecastStrip live atMs={replay.atMs} />
+                      ? sessionId && <ForecastStrip lang={lang} sessionId={sessionId} atMs={replay.atMs} />
+                      : isLiveActive && <ForecastStrip lang={lang} live atMs={replay.atMs} />
                   )}
                 </div>
               </div>
@@ -883,8 +891,8 @@ function App() {
             {/* Right column: driver focus when 1-2 selected, else insights feed. */}
             {hasFocus ? (
               <div className="col col-insights col-focus">
-                <div className="label">DRIVER FOCUS</div>
-                <FocusPanel
+                <div className="label">{(lang === 'ru' ? 'ФОКУС НА ПИЛОТЕ' : 'DRIVER FOCUS')}</div>
+                <FocusPanel lang={lang}
                   selectedIds={selectedIds}
                   drivers={state?.drivers ?? {}}
                   sessionId={mode === 'replay' ? sessionId : null}
@@ -896,7 +904,7 @@ function App() {
                 />
               </div>
             ) : (
-              <InsightPanel
+              <InsightPanel lang={lang}
                 key={mode === 'replay' ? sessionId ?? 'replay' : 'live'}
                 insights={mode !== 'replay' || timeline?.session_id === sessionId ? replay.insights : []}
                 commentary={mode !== 'replay' || timeline?.session_id === sessionId ? replay.commentary : []}
@@ -910,7 +918,7 @@ function App() {
           </div>
           )}
 
-          <ReplayDeck
+          <ReplayDeck lang={lang}
             timeline={timeline}
             atMs={replay.atMs}
             playing={replay.playing}

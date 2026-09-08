@@ -1,3 +1,6 @@
+import { viewerError } from '../../lib/viewerError'
+import { sessionTypeLabel } from '../../lib/format'
+import type { Lang } from './replayTypes'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getLiveSessions } from '../../api/client'
 import type { LiveSessionInfo, LiveSource } from '../../api/client'
@@ -8,6 +11,7 @@ import { TrackMap } from './TrackMap'
 type LobbyPhase = 'LOBBY' | 'SESSIONS' | 'COUNTDOWN' | 'LIVE'
 
 type Props = {
+  lang?: Lang
   signalrAvailable: boolean
   onStart: (year: number, country: string, sessionName: string, source: LiveSource) => Promise<void>
   onStop: () => void
@@ -38,7 +42,7 @@ function localTimeLabel(iso: string): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function LiveLobby({ signalrAvailable, onStart, onStop }: Props) {
+export function LiveLobby({ lang = 'en', signalrAvailable, onStart, onStop }: Props) {
   const [phase, setPhase] = useState<LobbyPhase>('LOBBY')
 
   // LOBBY inputs
@@ -143,15 +147,14 @@ export function LiveLobby({ signalrAvailable, onStart, onStop }: Props) {
     return (
       <main className="live-lobby">
         <section className="live-lobby-card" aria-labelledby="live-lobby-title">
-          <span className="live-lobby-kicker">LIVE CAPTURE</span>
-          <h1 id="live-lobby-title">Connect to F1 live timing</h1>
+          <span className="live-lobby-kicker">{(lang === 'ru' ? 'ЗАПИСЬ ЭФИРА' : 'LIVE CAPTURE')}</span>
+          <h1 id="live-lobby-title">{(lang === 'ru' ? 'Подключение к хронометражу F1' : 'Connect to F1 live timing')}</h1>
           <p className="live-lobby-intro">
-            Start the official feed before the session. A WAITING state is normal
-            until the first timing packet arrives.
+            {lang === 'ru' ? 'Подключитесь к официальному потоку до начала сессии. Статус ОЖИДАНИЕ сохраняется до первого пакета хронометража.' : 'Start the official feed before the session. A WAITING state is normal until the first timing packet arrives.'}
           </p>
           <div className="live-lobby-controls">
             <label>
-              <span>SEASON</span>
+              <span>{(lang === 'ru' ? 'СЕЗОН' : 'SEASON')}</span>
               <input
                 className="live-input live-year"
                 type="number"
@@ -163,12 +166,12 @@ export function LiveLobby({ signalrAvailable, onStart, onStop }: Props) {
               />
             </label>
             <label>
-              <span>GRAND PRIX</span>
+              <span>{(lang === 'ru' ? 'ГРАН-ПРИ' : 'GRAND PRIX')}</span>
               <input
                 className="live-input live-event"
                 type="text"
                 value={country}
-                placeholder="Belgium or Spa"
+                placeholder={(lang === 'ru' ? 'Belgium или Spa' : 'Belgium or Spa')}
                 onChange={(event) => setCountry(event.target.value)}
                 onKeyDown={(event) => event.key === 'Enter' && (
                   source === 'signalr' ? handleDirectStart() : void handleLoad()
@@ -178,67 +181,67 @@ export function LiveLobby({ signalrAvailable, onStart, onStop }: Props) {
             {source === 'signalr' ? (
               <>
                 <label>
-                  <span>SESSION</span>
+                  <span>{(lang === 'ru' ? 'СЕССИЯ' : 'SESSION')}</span>
                   <select
                     className="live-input live-session"
                     value={sessionName}
                     onChange={(event) => setSessionName(event.target.value)}
                   >
-                    <option>Practice 1</option>
-                    <option>Practice 2</option>
-                    <option>Practice 3</option>
-                    <option>Sprint Qualifying</option>
-                    <option>Sprint</option>
-                    <option>Qualifying</option>
-                    <option>Race</option>
+                    <option value="Practice 1">{sessionTypeLabel('Practice 1', lang)}</option>
+                    <option value="Practice 2">{sessionTypeLabel('Practice 2', lang)}</option>
+                    <option value="Practice 3">{sessionTypeLabel('Practice 3', lang)}</option>
+                    <option value="Sprint Qualifying">{sessionTypeLabel('Sprint Qualifying', lang)}</option>
+                    <option value="Sprint">{sessionTypeLabel('Sprint', lang)}</option>
+                    <option value="Qualifying">{sessionTypeLabel('Qualifying', lang)}</option>
+                    <option value="Race">{sessionTypeLabel('Race', lang)}</option>
                   </select>
                 </label>
                 <button className="b primary" type="button" onClick={handleDirectStart} disabled={loadBusy}>
-                  {loadBusy ? 'CONNECTING…' : 'START LIVE'}
+                  {lang === 'ru' ? (loadBusy ? 'ПОДКЛЮЧЕНИЕ…' : 'НАЧАТЬ ЭФИР') : (loadBusy ? 'CONNECTING…' : 'START LIVE')}
                 </button>
               </>
             ) : (
               <button className="b primary" type="button" onClick={handleLoad} disabled={loadBusy}>
-                {loadBusy ? 'LOADING…' : 'FIND SESSIONS'}
+                {lang === 'ru' ? (loadBusy ? 'ЗАГРУЗКА…' : 'НАЙТИ СЕССИИ') : (loadBusy ? 'LOADING…' : 'FIND SESSIONS')}
               </button>
             )}
           </div>
           <div className="live-source-row">
-            <div className="tog-group live-source-toggle" title="Live data source">
+            <div className="tog-group live-source-toggle" title={(lang === 'ru' ? 'Источник данных эфира' : 'Live data source')}>
               <button
                 type="button"
                 className={`tog${source === 'signalr' ? ' tog-on' : ''}`}
                 onClick={() => setSource('signalr')}
                 disabled={!signalrAvailable}
-                title="Official F1 live-timing feed — free, direct connect"
+                title={(lang === 'ru' ? 'Официальный хронометраж F1 — бесплатно, прямое подключение' : 'Official F1 live-timing feed — free, direct connect')}
               >
-                F1 FEED
+                {lang === 'ru' ? 'ДАННЫЕ F1' : 'F1 FEED'}
               </button>
               <button
                 type="button"
                 className={`tog${source === 'openf1' ? ' tog-on' : ''}`}
                 onClick={() => setSource('openf1')}
-                title="OpenF1 API — realtime tier is paid; free tier is delayed"
+                title={(lang === 'ru' ? 'OpenF1 API — прямой эфир платный; бесплатные данные с задержкой' : 'OpenF1 API — realtime tier is paid; free tier is delayed')}
               >
                 OPENF1
               </button>
             </div>
             <p>
               {source === 'signalr'
-                ? 'Free official feed · connects immediately and waits for the selected session.'
-                : 'OpenF1 discovery · live timing may require its paid realtime tier.'}
+                ? (lang === 'ru' ? 'Бесплатный официальный поток · подключается сразу и ждёт выбранную сессию.' : 'Free official feed · connects immediately and waits for the selected session.')
+                : (lang === 'ru' ? 'Поиск OpenF1 · для прямого эфира может потребоваться платный тариф.' : 'OpenF1 discovery · live timing may require its paid realtime tier.')}
             </p>
           </div>
-          {loadErr && <div className="live-err" role="alert">{loadErr}</div>}
+          {loadErr && <div className="live-err" role="alert">{viewerError(loadErr, lang)}</div>}
         </section>
         <aside className="live-lobby-guide">
-          <span>BEFORE LIGHTS OUT</span>
-          <strong>1 · Connect</strong>
-          <p>Use the same event and session names as the F1 schedule.</p>
-          <strong>2 · Leave it running</strong>
-          <p>Race Lens rejects the previous session and waits for the selected one.</p>
-          <strong>3 · Watch the status</strong>
-          <p>WAITING becomes LIVE after the first valid timing frame.</p>
+          <span>{(lang === 'ru' ? 'ПЕРЕД СТАРТОМ' : 'BEFORE LIGHTS OUT')}</span>
+          <strong>{(lang === 'ru' ? '1 · Подключитесь' : '1 · Connect')}</strong>
+          <p>{(lang === 'ru' ? 'Используйте названия этапа и сессии из расписания F1.' : 'Use the same event and session names as the F1 schedule.')}</p>
+          <strong>{(lang === 'ru' ? '2 · Оставьте подключение открытым' : '2 · Leave it running')}</strong>
+          <p>{(lang === 'ru' ? 'Race Lens пропускает предыдущую сессию и ждёт выбранную.' : 'Race Lens rejects the previous session and waits for the selected one.')}</p>
+          <strong>{(lang === 'ru' ? '3 · Следите за статусом' : '3 · Watch the status')}</strong>
+          <p>{(lang === 'ru' ? 'ОЖИДАНИЕ сменится ЭФИРОМ после первого корректного кадра хронометража.' : 'WAITING becomes LIVE after the first valid timing frame.')}</p>
         </aside>
       </main>
     )
@@ -253,7 +256,7 @@ export function LiveLobby({ signalrAvailable, onStart, onStop }: Props) {
               {year} {country.toUpperCase()}
             </span>
             <button className="b" type="button" onClick={() => setPhase('LOBBY')}>
-              BACK
+              {lang === 'ru' ? 'НАЗАД' : 'BACK'}
             </button>
           </div>
           <div className="live-session-list">
@@ -264,17 +267,17 @@ export function LiveLobby({ signalrAvailable, onStart, onStop }: Props) {
                 className={`b${s.started ? ' primary' : ''}`}
                 onClick={() => handleSessionClick(s)}
                 disabled={loadBusy}
-                title={s.started ? `Started at ${localTimeLabel(s.date_start)}` : `Starts at ${localTimeLabel(s.date_start)}`}
+                title={s.started ? `${lang === 'ru' ? 'Начало в' : 'Started at'} ${localTimeLabel(s.date_start)}` : `${lang === 'ru' ? 'Начнётся в' : 'Starts at'} ${localTimeLabel(s.date_start)}`}
               >
-                {s.session_name}
+                {sessionTypeLabel(s.session_name, lang)}
                 <span>
-                  {localTimeLabel(s.date_start)}{s.started ? '' : ' (scheduled)'}
+                  {localTimeLabel(s.date_start)}{s.started ? '' : (lang === 'ru' ? ' (по расписанию)' : ' (scheduled)')}
                 </span>
               </button>
             ))}
-            {sessions.length === 0 && <p>No sessions found for this event.</p>}
+            {sessions.length === 0 && <p>{(lang === 'ru' ? 'Сессии для этого этапа не найдены.' : 'No sessions found for this event.')}</p>}
           </div>
-          {loadErr && <div className="live-err" role="alert">{loadErr}</div>}
+          {loadErr && <div className="live-err" role="alert">{viewerError(loadErr, lang)}</div>}
         </section>
       </main>
     )
@@ -284,6 +287,7 @@ export function LiveLobby({ signalrAvailable, onStart, onStop }: Props) {
     return (
       <main className="live-countdown">
         <TrackMap
+          lang={lang}
           sessionId={null}
           atMs={0}
           playing={false}
@@ -295,17 +299,17 @@ export function LiveLobby({ signalrAvailable, onStart, onStop }: Props) {
         />
         <div className="live-countdown-overlay">
           <span>
-            {countdownTarget.session_name.toUpperCase()} STARTS IN
+            {sessionTypeLabel(countdownTarget.session_name, lang).toUpperCase()} · {lang === 'ru' ? 'НАЧАЛО ЧЕРЕЗ' : 'STARTS IN'}
           </span>
           <strong>
             {formatCountdown(remainMs)}
           </strong>
           <div className="live-countdown-actions">
-            <button className="b" type="button" onClick={() => setPhase('SESSIONS')}>BACK</button>
-            <button className="b danger" type="button" onClick={() => { setPhase('LOBBY'); onStop() }}>STOP</button>
+            <button className="b" type="button" onClick={() => setPhase('SESSIONS')}>{(lang === 'ru' ? 'НАЗАД' : 'BACK')}</button>
+            <button className="b danger" type="button" onClick={() => { setPhase('LOBBY'); onStop() }}>{(lang === 'ru' ? 'СТОП' : 'STOP')}</button>
           </div>
           <small>
-            LIVE CAPTURE STARTS AT THE SCHEDULED TIME
+            {lang === 'ru' ? 'ЗАПИСЬ ЭФИРА НАЧНЁТСЯ ПО РАСПИСАНИЮ' : 'LIVE CAPTURE STARTS AT THE SCHEDULED TIME'}
           </small>
         </div>
       </main>

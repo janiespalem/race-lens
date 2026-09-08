@@ -1,3 +1,4 @@
+import type { Lang } from '../features/replay/replayTypes'
 import type { Timeline } from '../api/types'
 
 export const formatRaceTime = (ms: number) => {
@@ -22,21 +23,30 @@ export const formatLapTime = (ms: number | null | undefined) => {
   return `${minutes}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`
 }
 
-export const sessionLabel = (sessionId: string): string => {
+export const sessionLabel = (sessionId: string, lang: Lang = 'en'): string => {
   const session = sessionMeta(sessionId)
-  return `${session.event} ${session.year} — ${sessionTypeLabel(session.type)}`
+  return `${session.event} ${session.year} — ${sessionTypeLabel(session.type, lang)}`
 }
 
 const title = (value: string) => value.charAt(0).toUpperCase() + value.slice(1)
 
 const SESSION_TYPES: Record<string, string> = {
   fp1: 'Practice 1', fp2: 'Practice 2', fp3: 'Practice 3',
+  practice_1: 'Practice 1', practice_2: 'Practice 2', practice_3: 'Practice 3',
   q: 'Qualifying', qualifying: 'Qualifying', sq: 'Sprint Qualifying',
   sprint_qualifying: 'Sprint Qualifying', sprint: 'Sprint', r: 'Race', race: 'Race',
 }
 
-export const sessionTypeLabel = (type: string): string =>
-  SESSION_TYPES[type] ?? type.split('_').map(title).join(' ')
+const SESSION_TYPES_RU: Record<string, string> = {
+  'Practice 1': 'Практика 1', 'Practice 2': 'Практика 2', 'Practice 3': 'Практика 3',
+  Qualifying: 'Квалификация', 'Sprint Qualifying': 'Спринт-квалификация',
+  Sprint: 'Спринт', Race: 'Гонка',
+}
+
+export const sessionTypeLabel = (type: string, lang: Lang = 'en'): string => {
+  const label = SESSION_TYPES[type.toLowerCase().replaceAll(' ', '_')] ?? type.split('_').map(title).join(' ')
+  return lang === 'ru' ? SESSION_TYPES_RU[label] ?? label : label
+}
 
 export const sessionMeta = (sessionId: string) => {
   const parts = sessionId.split('_')

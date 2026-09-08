@@ -42,6 +42,12 @@ const MARKER_PRIORITY: Partial<Record<RaceMarker['kind'], number>> = {
   UNDERCUT: 2,
 }
 
+const MARKER_LABEL_RU: Partial<Record<RaceMarker['kind'], string>> = {
+  RED_FLAG: 'КРАСНЫЙ ФЛАГ', CRASH: 'АВАРИЯ', SAFETY_CAR: 'МАШИНА БЕЗОПАСНОСТИ', VSC: 'VSC',
+  INCIDENT: 'ИНЦИДЕНТ', OFF_TRACK: 'ВЫЕЗД С ТРАССЫ', PENALTY: 'ШТРАФ', LEAD_CHANGE: 'СМЕНА ЛИДЕРА',
+  OVERTAKE: 'ОБГОН', UNDERCUT: 'АНДЕРКАТ',
+}
+
 export function selectBroadcastCandidate({
   atMs, playing, speed, lang, markers, feed,
 }: Args): BroadcastCandidate | null {
@@ -58,7 +64,7 @@ export function selectBroadcastCandidate({
       lap: marker.lap,
       tone,
       priority,
-      kicker: marker.kind.replaceAll('_', ' '),
+      kicker: lang === 'ru' ? (MARKER_LABEL_RU[marker.kind] ?? 'СОБЫТИЕ ГОНКИ') : marker.kind.replaceAll('_', ' '),
       title: lang === 'ru' ? marker.text_ru : marker.text_en,
     })
   }
@@ -72,8 +78,10 @@ export function selectBroadcastCandidate({
       tone: radio ? 'radio' : 'strategy',
       priority: radio ? 1 : 2,
       kicker: radio
-        ? `TEAM RADIO${item.transcript ? ' · MACHINE TRANSCRIPT' : ''}`
-        : 'PIT STRATEGY',
+        ? (lang === 'ru'
+          ? `РАДИО КОМАНДЫ${item.transcript ? ' · АВТОРАСШИФРОВКА' : ''}`
+          : `TEAM RADIO${item.transcript ? ' · MACHINE TRANSCRIPT' : ''}`)
+        : (lang === 'ru' ? 'ПИТ-СТРАТЕГИЯ' : 'PIT STRATEGY'),
       title: radio && item.transcript ? item.transcript : item.text,
     })
   }

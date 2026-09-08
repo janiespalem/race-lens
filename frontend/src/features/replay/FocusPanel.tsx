@@ -2,9 +2,13 @@ import React, { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { getLiveSimulatePit, getSimulatePit, getWhatIf } from '../../api/client'
 import type { DriverState, PitSim, PitSimEvidence, WhatIf, WhatIfDiff } from '../../api/types'
 import { formatRaceTime } from '../../lib/format'
+import { viewerError } from '../../lib/viewerError'
 import { teamColor } from './teamColors'
 
+type Lang = 'en' | 'ru'
+
 type Props = {
+  lang?: Lang
   selectedIds: string[]
   drivers: Record<string, DriverState>
   /** Session ID for pit-sim/what-if (replay only; null in live). */
@@ -27,9 +31,9 @@ function fmtLap(ms: number | null | undefined): string {
   return `${m}:${String(s).padStart(2, '0')}.${t}`
 }
 
-function fmtGap(s: number | null): string {
+function fmtGap(s: number | null, lang: Lang): string {
   if (s === null) return '—'
-  return `+${s.toFixed(1)}s`
+  return `+${s.toFixed(1)}${lang === 'ru' ? 'с' : 's'}`
 }
 
 function recentLaps(driver: DriverState): number[] {
@@ -57,30 +61,32 @@ function isPitLap(driver: DriverState): boolean {
 }
 
 /** Pit sim verdict card */
-function PitSimCard({ ev, snapshot }: { ev: PitSimEvidence; snapshot: PitSnapshot | null }) {
+function PitSimCard({ ev, snapshot, lang }: { ev: PitSimEvidence; snapshot: PitSnapshot | null; lang: Lang }) {
   const verdictColor = ev.verdict === 'UNDERCUT_LIKELY' ? '#00c853' : ev.verdict === 'UNLIKELY' ? '#f2a900' : '#a0a0ac'
-  const verdictText = ev.verdict === 'UNDERCUT_LIKELY' ? 'UNDERCUT LIKELY' : ev.verdict === 'UNLIKELY' ? 'UNLIKELY' : 'NO RIVAL'
+  const verdictText = ev.verdict === 'UNDERCUT_LIKELY' ? (lang === 'ru' ? 'АНДЕРКАТ ВЕРОЯТЕН' : 'UNDERCUT LIKELY')
+    : ev.verdict === 'UNLIKELY' ? (lang === 'ru' ? 'МАЛОВЕРОЯТНО' : 'UNLIKELY')
+      : (lang === 'ru' ? 'НЕТ СОПЕРНИКА' : 'NO RIVAL')
   return (
     <div className="pit-sim-card">
       {snapshot && (
         <div className="pit-sim-snapshot">
-          REQUESTED AT · L{snapshot.lap || '—'} · T+{formatRaceTime(snapshot.atMs)}
+          {lang === 'ru' ? 'ЗАПРОШЕНО · К' : 'REQUESTED AT · L'}{snapshot.lap || '—'} · T+{formatRaceTime(snapshot.atMs)}
         </div>
       )}
       <div className="pit-sim-verdict" style={{ color: verdictColor }}>{verdictText}</div>
       <div className="pit-sim-rows">
-        <span>REJOINS P{ev.rejoin_pos}</span>
+        <span>{lang === 'ru' ? 'ВЕРНЁТСЯ НА P' : 'REJOINS P'}{ev.rejoin_pos}</span>
         {ev.key_rival && ev.margin_s !== null && (
-          <span>VS {ev.key_rival}: MARGIN {ev.margin_s.toFixed(1)}s</span>
+          <span>{lang === 'ru' ? 'ПРОТИВ' : 'VS'} {ev.key_rival}: {lang === 'ru' ? 'ЗАПАС' : 'MARGIN'} {ev.margin_s.toFixed(1)}{lang === 'ru' ? 'с' : 's'}</span>
         )}
-        <span>PIT LOSS {ev.pit_loss_s.toFixed(1)}s</span>
+        <span>{lang === 'ru' ? 'ПОТЕРЯ НА ПИТЕ' : 'PIT LOSS'} {ev.pit_loss_s.toFixed(1)}{lang === 'ru' ? 'с' : 's'}</span>
       </div>
     </div>
   )
 }
 
 /** What-If result card */
-function WhatIfCard({ result, lang }: { result: WhatIf; lang?: string }) {
+function WhatIfCard({ result, lang }: { result: WhatIf; lang: Lang }) {
   const summary = lang === 'ru' ? result.summary_text_ru : result.summary_text_en
   const topMovers = result.diff.filter((d) => d.delta !== 0).slice(0, 5)
 
@@ -102,13 +108,13 @@ function WhatIfCard({ result, lang }: { result: WhatIf; lang?: string }) {
           ))}
         </div>
       )}
-      <div className="what-if-note">strategy sensitivity · uncalibrated</div>
+      <div className="what-if-note">{lang === 'ru' ? 'чувствительность стратегии · модель не калибрована' : 'strategy sensitivity · uncalibrated'}</div>
     </div>
   )
 }
 
 /** Single-driver card (non-H2H mode) */
-function DriverCard({ driverId, driver, sessionId, live, atMs, lap, onStrategyRequest }: { driverId: string; driver: DriverState; sessionId: string | null; live?: boolean; atMs: number; lap: number; onStrategyRequest?: () => void }) {
+function DriverCard({ lang, driverId, driver, sessionId, live, atMs, lap, onStrategyRequest }: { lang: Lang; driverId: string; driver: DriverState; sessionId: string | null; live?: boolean; atMs: number; lap: number; onStrategyRequest?: () => void }) {
   const color = teamColor(driverId)
   const laps = recentLaps(driver)
   const compound = driver.tyre_compound?.charAt(0).toUpperCase() ?? '?'
@@ -194,15 +200,15 @@ function DriverCard({ driverId, driver, sessionId, live, atMs, lap, onStrategyRe
     <div className="focus-card">
       <div className="focus-head" style={{ borderLeftColor: color }}>
         <span className="focus-code" style={{ color }}>{driverId}</span>
-        {inPit && <span className="focus-inpit-badge">IN PIT</span>}
+        {inPit && <span className="focus-inpit-badge">{lang === 'ru' ? 'В БОКСАХ' : 'IN PIT'}</span>}
         <span className="focus-pos">P{driver.position ?? '—'}</span>
         <span className="focus-gap">
-          {driver.position === 1 ? 'LEADER' : fmtGap(driver.gap_s)}
+          {driver.position === 1 ? (lang === 'ru' ? 'ЛИДЕР' : 'LEADER') : fmtGap(driver.gap_s, lang)}
         </span>
         <span className={`focus-tyre ty ${compound}`}>
           {compound}<span className="age">{driver.tyre_age_laps ?? '—'}</span>
         </span>
-        <span className="focus-pits" style={{ fontSize: 14 }}>{driver.pit_count ?? 0}×PIT</span>
+        <span className="focus-pits" style={{ fontSize: 14 }}>{driver.pit_count ?? 0}×{lang === 'ru' ? 'ПИТ' : 'PIT'}</span>
       </div>
       <div className="focus-laps">
         {laps.length === 0 && <span className="focus-lap-cell dim">—</span>}
@@ -214,7 +220,7 @@ function DriverCard({ driverId, driver, sessionId, live, atMs, lap, onStrategyRe
             <span key={i} className="focus-lap-cell">
               <span className="focus-lap-time">{fmtLap(ms)}</span>
               {isLast && pitLap && (
-                <span className="focus-pitlap-ann">PIT LAP</span>
+                <span className="focus-pitlap-ann">{lang === 'ru' ? 'КРУГ С ПИТОМ' : 'PIT LAP'}</span>
               )}
               {delta !== null && (
                 <span className={`focus-lap-delta ${delta < 0 ? 'up' : 'down'}`}>
@@ -227,46 +233,48 @@ function DriverCard({ driverId, driver, sessionId, live, atMs, lap, onStrategyRe
       </div>
       {driver.interval_s !== null && driver.position !== 1 && (
         <div className="focus-int">
-          INT <b>+{driver.interval_s.toFixed(2)}s</b> to car ahead
+          {lang === 'ru' ? 'ИНТ' : 'INT'} <b>+{driver.interval_s.toFixed(2)}{lang === 'ru' ? 'с' : 's'}</b> {lang === 'ru' ? 'до машины впереди' : 'to car ahead'}
         </div>
       )}
       {(sessionId || live) && (
         <div className="focus-pit-row" aria-busy={pitBusy}>
           <button className="b pit-now-btn" type="button" onClick={handlePitNow} disabled={pitBusy}>
-            PIT NOW
+            {lang === 'ru' ? 'В БОКСЫ СЕЙЧАС' : 'PIT NOW'}
           </button>
-          {pitBusy && <div className="strategy-action-status" role="status">CALCULATING PIT WINDOW…</div>}
-          {pitSim && !pitSim.error && pitSim.evidence && <PitSimCard ev={pitSim.evidence} snapshot={pitSnapshot} />}
-          {(pitError || pitSim?.error) && <div className="strategy-action-error" role="alert">{pitError || pitSim?.error}</div>}
+          {pitBusy && <div className="strategy-action-status" role="status">{lang === 'ru' ? 'РАСЧЁТ ПИТ-ОКНА…' : 'CALCULATING PIT WINDOW…'}</div>}
+          {pitSim && !pitSim.error && pitSim.evidence && <PitSimCard lang={lang} ev={pitSim.evidence} snapshot={pitSnapshot} />}
+          {(pitError || pitSim?.error) && <div className="strategy-action-error" role="alert">{pitError
+            ? (lang === 'ru' ? 'Не удалось рассчитать пит-стоп · повторите попытку' : pitError)
+            : viewerError(pitSim?.error ?? '', lang)}</div>}
         </div>
       )}
       {sessionId && (
         // WHAT IF has no live mirror (server-side) — replay only.
         <div className="focus-whatif-section" aria-busy={whatIfBusy}>
-          <div className="focus-whatif-label">WHAT IF</div>
+          <div className="focus-whatif-label">{lang === 'ru' ? 'ЧТО ЕСЛИ' : 'WHAT IF'}</div>
           <div className="focus-whatif-btns">
             <button
               className={`b whatif-btn${whatIfScenario === 'pit_now' ? ' active' : ''}`}
               type="button"
               onClick={() => handleWhatIf('pit_now')}
               disabled={whatIfBusy}
-              title="Full race projection if driver pits right now"
+              title={lang === 'ru' ? 'Прогноз финиша при пит-стопе сейчас' : 'Full race projection if driver pits right now'}
             >
-              PIT FINISH
+              {lang === 'ru' ? 'ФИНИШ С ПИТОМ' : 'PIT FINISH'}
             </button>
             <button
               className={`b whatif-btn${whatIfScenario === 'stay_out' ? ' active' : ''}`}
               type="button"
               onClick={() => handleWhatIf('stay_out')}
               disabled={whatIfBusy}
-              title="Full race projection if driver stays out on current tyres"
+              title={lang === 'ru' ? 'Прогноз финиша на текущих шинах без пит-стопа' : 'Full race projection if driver stays out on current tyres'}
             >
-              STAY OUT
+              {lang === 'ru' ? 'ОСТАТЬСЯ НА ТРАССЕ' : 'STAY OUT'}
             </button>
           </div>
-          {whatIfBusy && <div className="strategy-action-status" role="status">CALCULATING FINISH…</div>}
-          {whatIfError && <div className="strategy-action-error" role="alert">{whatIfError}</div>}
-          {whatIf && !whatIfBusy && <WhatIfCard result={whatIf} />}
+          {whatIfBusy && <div className="strategy-action-status" role="status">{lang === 'ru' ? 'РАСЧЁТ ФИНИША…' : 'CALCULATING FINISH…'}</div>}
+          {whatIfError && <div className="strategy-action-error" role="alert">{lang === 'ru' ? 'Не удалось рассчитать финиш · повторите попытку' : whatIfError}</div>}
+          {whatIf && !whatIfBusy && <WhatIfCard lang={lang} result={whatIf} />}
         </div>
       )}
     </div>
@@ -274,7 +282,7 @@ function DriverCard({ driverId, driver, sessionId, live, atMs, lap, onStrategyRe
 }
 
 /** H2H half-panel for one driver */
-function H2HDriver({ driverId, driver }: { driverId: string; driver: DriverState }) {
+function H2HDriver({ lang, driverId, driver }: { lang: Lang; driverId: string; driver: DriverState }) {
   const color = teamColor(driverId)
   const laps = recentLaps(driver)
   const compound = driver.tyre_compound?.charAt(0).toUpperCase() ?? '?'
@@ -284,7 +292,7 @@ function H2HDriver({ driverId, driver }: { driverId: string; driver: DriverState
       <div className="h2h-code" style={{ color }}>{driverId}</div>
       <div className="h2h-meta">
         <span className="h2h-pos">P{driver.position ?? '—'}</span>
-        <span className="h2h-gap">{driver.position === 1 ? 'LEADER' : fmtGap(driver.gap_s)}</span>
+        <span className="h2h-gap">{driver.position === 1 ? (lang === 'ru' ? 'ЛИДЕР' : 'LEADER') : fmtGap(driver.gap_s, lang)}</span>
       </div>
       <div className="h2h-laps">
         {laps.length === 0 && <span className="h2h-lap-cell"><span className="h2h-lap-time">—</span></span>}
@@ -305,16 +313,16 @@ function H2HDriver({ driverId, driver }: { driverId: string; driver: DriverState
       </div>
       <div className="h2h-tyre-row">
         <span className={`ty ${compound}`}>{compound}<span className="age">{driver.tyre_age_laps ?? '—'}</span></span>
-        <span className="h2h-pits">{driver.pit_count ?? 0}×PIT</span>
+        <span className="h2h-pits">{driver.pit_count ?? 0}×{lang === 'ru' ? 'ПИТ' : 'PIT'}</span>
       </div>
     </div>
   )
 }
 
 function H2HDeltas({
-  idA, idB, driverA, driverB,
+  lang, idA, idB, driverA, driverB,
 }: {
-  idA: string; idB: string; driverA: DriverState; driverB: DriverState
+  lang: Lang; idA: string; idB: string; driverA: DriverState; driverB: DriverState
 }) {
   const gapDiff = driverA.gap_s !== null && driverB.gap_s !== null
     ? Math.abs(driverA.gap_s - driverB.gap_s)
@@ -329,14 +337,14 @@ function H2HDeltas({
   return (
     <div className="h2h-deltas">
       <div className="h2h-delta-cell">
-        <span className="h2h-delta-label">Δ GAP</span>
-        <span className="h2h-delta-val">{gapDiff !== null ? `${gapDiff.toFixed(1)}s` : '—'}</span>
+        <span className="h2h-delta-label">{lang === 'ru' ? 'Δ ОТРЫВ' : 'Δ GAP'}</span>
+        <span className="h2h-delta-val">{gapDiff !== null ? `${gapDiff.toFixed(1)}${lang === 'ru' ? 'с' : 's'}` : '—'}</span>
       </div>
       <div className="h2h-delta-cell">
-        <span className="h2h-delta-label">Δ LAST</span>
+        <span className="h2h-delta-label">{lang === 'ru' ? 'Δ ПОСЛ. КРУГ' : 'Δ LAST'}</span>
         <span className="h2h-delta-val">
           {lastDiff !== null
-            ? `${(Math.abs(lastDiff) / 1000).toFixed(2)}s`
+            ? `${(Math.abs(lastDiff) / 1000).toFixed(2)}${lang === 'ru' ? 'с' : 's'}`
             : '—'}
         </span>
         {lastDiff !== null && (() => {
@@ -345,24 +353,24 @@ function H2HDeltas({
             <span
               className="h2h-delta-who h2h-delta-faster"
               style={{ color: teamColor(fasterId) }}
-            >{fasterId} faster</span>
+            >{fasterId} {lang === 'ru' ? 'быстрее' : 'faster'}</span>
           )
         })()}
       </div>
       <div className="h2h-delta-cell">
-        <span className="h2h-delta-label">Δ TYRE</span>
+        <span className="h2h-delta-label">{lang === 'ru' ? 'Δ ШИНЫ' : 'Δ TYRE'}</span>
         <span className="h2h-delta-val">
-          {tyreDiff !== null ? `${Math.abs(tyreDiff)}L` : '—'}
+          {tyreDiff !== null ? `${Math.abs(tyreDiff)}${lang === 'ru' ? 'К' : 'L'}` : '—'}
         </span>
         {tyreDiff !== null && tyreDiff !== 0 && (
-          <span className="h2h-delta-who">{tyreDiff > 0 ? idA : idB} older</span>
+          <span className="h2h-delta-who">{tyreDiff > 0 ? idA : idB} {lang === 'ru' ? 'старше' : 'older'}</span>
         )}
       </div>
     </div>
   )
 }
 
-export const FocusPanel = React.memo(function FocusPanel({ selectedIds, drivers, sessionId, live, atMs, lap, onStrategyRequest, onRemoveDriver }: Props) {
+export const FocusPanel = React.memo(function FocusPanel({ lang = 'en', selectedIds, drivers, sessionId, live, atMs, lap, onStrategyRequest, onRemoveDriver }: Props) {
   if (selectedIds.length === 0) return null
 
   const [idA, idB] = selectedIds
@@ -373,9 +381,9 @@ export const FocusPanel = React.memo(function FocusPanel({ selectedIds, drivers,
 
   const isH2H = driverB !== null && idB !== undefined
   const selection = (
-    <div className="focus-selection" aria-label="Selected drivers">
+    <div className="focus-selection" aria-label={lang === 'ru' ? 'Выбранные гонщики' : 'Selected drivers'}>
       {selectedIds.map((id) => (
-        <button type="button" key={id} onClick={() => onRemoveDriver(id)} aria-label={`Remove ${id} from driver focus`}>
+        <button type="button" key={id} onClick={() => onRemoveDriver(id)} aria-label={lang === 'ru' ? `Убрать ${id} из выбранных гонщиков` : `Remove ${id} from driver focus`}>
           {id}<span aria-hidden="true"> ×</span>
         </button>
       ))}
@@ -386,13 +394,13 @@ export const FocusPanel = React.memo(function FocusPanel({ selectedIds, drivers,
     return (
       <div className="focus-panel focus-panel-h2h">
         {selection}
-        <div className="focus-h2h-label">HEAD TO HEAD</div>
+        <div className="focus-h2h-label">{lang === 'ru' ? 'СРАВНЕНИЕ ГОНЩИКОВ' : 'HEAD TO HEAD'}</div>
         <div className="h2h-body">
-          <H2HDriver driverId={idA} driver={driverA} />
+          <H2HDriver lang={lang} driverId={idA} driver={driverA} />
           <div className="h2h-divider" />
-          <H2HDriver driverId={idB!} driver={driverB} />
+          <H2HDriver lang={lang} driverId={idB!} driver={driverB} />
         </div>
-        <H2HDeltas idA={idA} idB={idB!} driverA={driverA} driverB={driverB} />
+        <H2HDeltas lang={lang} idA={idA} idB={idB!} driverA={driverA} driverB={driverB} />
       </div>
     )
   }
@@ -401,7 +409,7 @@ export const FocusPanel = React.memo(function FocusPanel({ selectedIds, drivers,
     <div className="focus-panel">
       {selection}
       <div className="focus-cards">
-        <DriverCard key={idA} driverId={idA} driver={driverA} sessionId={sessionId} live={live} atMs={atMs} lap={lap} onStrategyRequest={onStrategyRequest} />
+        <DriverCard lang={lang} key={idA} driverId={idA} driver={driverA} sessionId={sessionId} live={live} atMs={atMs} lap={lap} onStrategyRequest={onStrategyRequest} />
       </div>
     </div>
   )

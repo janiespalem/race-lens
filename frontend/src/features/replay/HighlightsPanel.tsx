@@ -109,15 +109,15 @@ export function HighlightsPanel({ sessionId, lang = 'en', untilMs, onSeek }: Pro
         type="button"
         className={`tog${open ? ' tog-on' : ''}`}
         onClick={toggle}
-        title="Highlight reel — race in 60 seconds"
+        title={lang === 'ru' ? 'Главные моменты — гонка за 60 секунд' : 'Highlight reel — race in 60 seconds'}
       >
-        HIGHLIGHTS
+        {lang === 'ru' ? 'ГЛАВНЫЕ МОМЕНТЫ' : 'HIGHLIGHTS'}
       </button>
 
       {open && (
         <div className="hl-panel">
           <div className="hl-header">
-            <span className="hl-title">HIGHLIGHTS SO FAR</span>
+            <span className="hl-title">{lang === 'ru' ? 'ГЛАВНЫЕ МОМЕНТЫ К ЭТОМУ ВРЕМЕНИ' : 'HIGHLIGHTS SO FAR'}</span>
             {!playing ? (
               <button
                 type="button"
@@ -125,7 +125,7 @@ export function HighlightsPanel({ sessionId, lang = 'en', untilMs, onSeek }: Pro
                 disabled={loading || highlights.length === 0}
                 onClick={startPlay}
               >
-                PLAY HIGHLIGHTS
+                {lang === 'ru' ? 'СМОТРЕТЬ МОМЕНТЫ' : 'PLAY HIGHLIGHTS'}
               </button>
             ) : (
               <button
@@ -133,15 +133,15 @@ export function HighlightsPanel({ sessionId, lang = 'en', untilMs, onSeek }: Pro
                 className="b danger hl-play-btn"
                 onClick={stopPlay}
               >
-                STOP
+                {lang === 'ru' ? 'СТОП' : 'STOP'}
               </button>
             )}
           </div>
 
-          {loading && <div className="hl-empty">Loading…</div>}
+          {loading && <div className="hl-empty">{lang === 'ru' ? 'Загрузка…' : 'Loading…'}</div>}
 
           {!loading && highlights.length === 0 && (
-            <div className="hl-empty">No highlights available</div>
+            <div className="hl-empty">{lang === 'ru' ? 'Главных моментов пока нет' : 'No highlights available'}</div>
           )}
 
           <div className="hl-list">
@@ -156,11 +156,11 @@ export function HighlightsPanel({ sessionId, lang = 'en', untilMs, onSeek }: Pro
                   type="button"
                   className={`hl-item${isActive ? ' hl-item-active' : ''}`}
                   onClick={() => onSeek(h.at_ms)}
-                  title={`Seek to ${formatRaceTime(h.at_ms)}`}
+                  title={lang === 'ru' ? `Перейти к ${formatRaceTime(h.at_ms)}` : `Seek to ${formatRaceTime(h.at_ms)}`}
                 >
                   <span className="hl-icon" style={{ color }}>{icon}</span>
                   <span className="hl-time">{formatRaceTime(h.at_ms)}</span>
-                  {h.lap != null && <span className="hl-lap">L{h.lap}</span>}
+                  {h.lap != null && <span className="hl-lap">{lang === 'ru' ? 'К' : 'L'}{h.lap}</span>}
                   <span className="hl-text">{title}</span>
                 </button>
               )

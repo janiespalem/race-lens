@@ -42,8 +42,8 @@ type Props = {
 export function TopBar({ sessionId, lap, totalLaps, lang, level, mode, liveAvailable, liveNowAvailable, projection, voice, desk, customEditing, onModeChange, onLang, onLevel, onProjection, onVoice, onDeskChange, onEditCustom, onSeek, onSettingsOpen, onCatalogOpen, sessionStatus, atMs, anchoredHighlights = true, anchoredDotd = true, sessionName, companion }: Props) {
   const current = sessionId ? sessionMeta(sessionId) : null
   const sessionTriggerLabel = current?.year
-    ? `${current.year} · ${current.event} · ${sessionTypeLabel(current.type)}`
-    : 'YEAR · EVENT · SESSION'
+    ? `${current.year} · ${current.event} · ${sessionTypeLabel(current.type, lang)}`
+    : (lang === 'ru' ? 'ГОД · ЭТАП · СЕССИЯ' : 'YEAR · EVENT · SESSION')
   const [layersOpen, setLayersOpen] = useState(false)
   // LAYERS badge lights up when any optional layer is active.
   const anyLayer = projection || voice || level === 'beginner' || desk === 'custom' || customEditing
@@ -63,8 +63,8 @@ export function TopBar({ sessionId, lap, totalLaps, lang, level, mode, liveAvail
         </div>
       ) : (
         <div className="sess">
-          <b>LIVE</b>
-          <i>{sessionName ? `${sessionName} · ` : 'Near-live · '}F1 feed</i>
+          <b>{(lang === 'ru' ? 'ЭФИР' : 'LIVE')}</b>
+          <i>{sessionName ? `${lang === 'ru' ? sessionName.split(' · ').map((part) => sessionTypeLabel(part, lang)).join(' · ') : sessionName} · ` : (lang === 'ru' ? 'С задержкой · ' : 'Near-live · ')}{lang === 'ru' ? 'Данные F1' : 'F1 feed'}</i>
         </div>
       )}
 
@@ -75,13 +75,13 @@ export function TopBar({ sessionId, lap, totalLaps, lang, level, mode, liveAvail
             type="button"
             className={`tog${mode === 'replay' ? ' tog-on' : ''}`}
             onClick={() => onModeChange('replay')}
-          >REPLAY</button>
+          >{(lang === 'ru' ? 'ПОВТОР' : 'REPLAY')}</button>
           {liveAvailable && (
             <button
               type="button"
               className={`tog${mode === 'live' ? ' tog-on' : ''}`}
               onClick={() => onModeChange('live')}
-            >{liveNowAvailable ? 'LIVE NOW' : 'LIVE'}</button>
+            >{lang === 'ru' ? (liveNowAvailable ? 'СЕЙЧАС В ЭФИРЕ' : 'ЭФИР') : (liveNowAvailable ? 'LIVE NOW' : 'LIVE')}</button>
           )}
         </div>
         {/* LAYERS popover — collects the optional view layers so the bar stays clean. */}
@@ -91,28 +91,28 @@ export function TopBar({ sessionId, lap, totalLaps, lang, level, mode, liveAvail
             className={`tog${anyLayer ? ' tog-on' : ''}`}
             aria-expanded={layersOpen}
             onClick={() => setLayersOpen((o) => !o)}
-          >LAYERS ▾</button>
+          >{(lang === 'ru' ? 'СЛОИ ▾' : 'LAYERS ▾')}</button>
           {layersOpen && (
             <>
               <div className="layers-backdrop" onClick={() => setLayersOpen(false)} />
               <div className="layers-pop" role="menu">
                 <div className="layer-row">
-                  <span className="layer-name">DETAIL</span>
+                  <span className="layer-name">{(lang === 'ru' ? 'ПОДРОБНОСТИ' : 'DETAIL')}</span>
                   <div className="tog-group">
                     <button
                       type="button"
                       className={`tog${level === 'beginner' ? ' tog-on' : ''}`}
                       onClick={() => onLevel('beginner')}
-                    >ROOKIE</button>
+                    >{(lang === 'ru' ? 'НОВИЧОК' : 'ROOKIE')}</button>
                     <button
                       type="button"
                       className={`tog${level === 'pro' ? ' tog-on' : ''}`}
                       onClick={() => onLevel('pro')}
-                    >PRO</button>
+                    >{(lang === 'ru' ? 'ЭКСПЕРТ' : 'PRO')}</button>
                   </div>
                 </div>
                 <div className="layer-row">
-                  <span className="layer-name">DESK</span>
+                  <span className="layer-name">{(lang === 'ru' ? 'РАСКЛАДКА' : 'DESK')}</span>
                   <div className="tog-group">
                     {(['classic', 'custom'] as const).map((value) => (
                       <button
@@ -123,7 +123,7 @@ export function TopBar({ sessionId, lap, totalLaps, lang, level, mode, liveAvail
                           onDeskChange(value)
                           setLayersOpen(false)
                         }}
-                      >{value.toUpperCase()}</button>
+                      >{lang === 'ru' ? (value === 'classic' ? 'КЛАССИКА' : 'СВОЯ') : value.toUpperCase()}</button>
                     ))}
                   </div>
                 </div>
@@ -132,16 +132,16 @@ export function TopBar({ sessionId, lap, totalLaps, lang, level, mode, liveAvail
                   className={`layer-row layer-toggle${projection ? ' on' : ''}`}
                   onClick={() => onProjection(!projection)}
                 >
-                  <span className="layer-name">PACE OUTLOOK</span>
-                  <span className="layer-state">{projection ? 'ON' : 'OFF'}</span>
+                  <span className="layer-name">{(lang === 'ru' ? 'ПРОГНОЗ ТЕМПА' : 'PACE OUTLOOK')}</span>
+                  <span className="layer-state">{lang === 'ru' ? (projection ? 'ВКЛ' : 'ВЫКЛ') : (projection ? 'ON' : 'OFF')}</span>
                 </button>
                 <button
                   type="button"
                   className={`layer-row layer-toggle${voice ? ' on' : ''}`}
                   onClick={() => onVoice(!voice)}
                 >
-                  <span className="layer-name">VOICE</span>
-                  <span className="layer-state">{voice ? 'ON' : 'OFF'}</span>
+                  <span className="layer-name">{(lang === 'ru' ? 'ГОЛОС' : 'VOICE')}</span>
+                  <span className="layer-state">{lang === 'ru' ? (voice ? 'ВКЛ' : 'ВЫКЛ') : (voice ? 'ON' : 'OFF')}</span>
                 </button>
                 <button
                   type="button"
@@ -151,14 +151,14 @@ export function TopBar({ sessionId, lap, totalLaps, lang, level, mode, liveAvail
                     onEditCustom()
                   }}
                 >
-                  <span className="layer-name">EDIT CUSTOM</span>
-                  <span className="layer-state">{customEditing ? 'EDITING' : '→'}</span>
+                  <span className="layer-name">{(lang === 'ru' ? 'НАСТРОИТЬ' : 'EDIT CUSTOM')}</span>
+                  <span className="layer-state">{customEditing ? (lang === 'ru' ? 'ПРАВКА' : 'EDITING') : '→'}</span>
                 </button>
               </div>
             </>
           )}
         </div>
-        <div className="tog-group tog-group--secondary" aria-label="Language">
+        <div className="tog-group tog-group--secondary" aria-label={(lang === 'ru' ? 'Язык' : 'Language')}>
           <button
             type="button"
             className={`tog${lang === 'en' ? ' tog-on' : ''}`}
@@ -185,14 +185,14 @@ export function TopBar({ sessionId, lap, totalLaps, lang, level, mode, liveAvail
         type="button"
         className="settings-btn"
         onClick={onSettingsOpen}
-        title="Settings"
-        aria-label="Open settings"
+        title={(lang === 'ru' ? 'Настройки' : 'Settings')}
+        aria-label={(lang === 'ru' ? 'Открыть настройки' : 'Open settings')}
       >&#9881;</button>
 
       {companion}
 
       <div className="lapbox">
-        <span className="word">LAP</span>
+        <span className="word">{(lang === 'ru' ? 'КРУГ' : 'LAP')}</span>
         <span className="n">{lap || '—'}</span>
         <span className="of">/ {totalLaps ?? '—'}</span>
       </div>

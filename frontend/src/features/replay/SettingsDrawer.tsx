@@ -62,22 +62,22 @@ export function SettingsDrawer({
   return (
     <div className={`settings-overlay${open ? ' open' : ''}`} aria-hidden={!open}>
       <div className="settings-backdrop" onClick={onClose} />
-      <div ref={drawerRef} className="settings-drawer" role="dialog" aria-modal="true" aria-label="Settings">
+      <div ref={drawerRef} className="settings-drawer" role="dialog" aria-modal="true" aria-label={(lang === 'ru' ? 'Настройки' : 'Settings')}>
         <div className="settings-drawer-hdr">
-          <span>SETTINGS</span>
-          <button ref={closeRef} type="button" className="settings-close" onClick={onClose} aria-label="Close">&#215;</button>
+          <span>{(lang === 'ru' ? 'НАСТРОЙКИ' : 'SETTINGS')}</span>
+          <button ref={closeRef} type="button" className="settings-close" onClick={onClose} aria-label={(lang === 'ru' ? 'Закрыть' : 'Close')}>&#215;</button>
         </div>
 
         <div className="settings-group">
-          <div className="settings-group-label">MODE</div>
+          <div className="settings-group-label">{(lang === 'ru' ? 'РЕЖИМ' : 'MODE')}</div>
           <div className="tog-group">
-            <button type="button" className={`tog${mode === 'replay' ? ' tog-on' : ''}`} onClick={() => { onModeChange('replay'); onClose() }}>REPLAY</button>
-            <button type="button" className={`tog${mode === 'live' ? ' tog-on' : ''}`} disabled={!liveAvailable} onClick={() => { onModeChange('live'); onClose() }}>{liveNowAvailable ? 'LIVE NOW' : 'LIVE'}</button>
+            <button type="button" className={`tog${mode === 'replay' ? ' tog-on' : ''}`} onClick={() => { onModeChange('replay'); onClose() }}>{(lang === 'ru' ? 'ПОВТОР' : 'REPLAY')}</button>
+            <button type="button" className={`tog${mode === 'live' ? ' tog-on' : ''}`} disabled={!liveAvailable} onClick={() => { onModeChange('live'); onClose() }}>{lang === 'ru' ? (liveNowAvailable ? 'СЕЙЧАС В ЭФИРЕ' : 'ЭФИР') : (liveNowAvailable ? 'LIVE NOW' : 'LIVE')}</button>
           </div>
         </div>
 
         <div className="settings-group">
-          <div className="settings-group-label">LANGUAGE</div>
+          <div className="settings-group-label">{(lang === 'ru' ? 'ЯЗЫК' : 'LANGUAGE')}</div>
           <div className="tog-group">
             <button type="button" className={`tog${lang === 'en' ? ' tog-on' : ''}`} onClick={() => onLang('en')}>EN</button>
             <button type="button" className={`tog${lang === 'ru' ? ' tog-on' : ''}`} onClick={() => onLang('ru')}>RU</button>
@@ -85,16 +85,16 @@ export function SettingsDrawer({
         </div>
 
         <div className="settings-group">
-          <div className="settings-group-label">LEVEL</div>
+          <div className="settings-group-label">{(lang === 'ru' ? 'УРОВЕНЬ' : 'LEVEL')}</div>
           <div className="tog-group">
-            <button type="button" className={`tog${level === 'beginner' ? ' tog-on' : ''}`} onClick={() => onLevel('beginner')}>ROOKIE</button>
-            <button type="button" className={`tog${level === 'pro' ? ' tog-on' : ''}`} onClick={() => onLevel('pro')}>PRO</button>
+            <button type="button" className={`tog${level === 'beginner' ? ' tog-on' : ''}`} onClick={() => onLevel('beginner')}>{(lang === 'ru' ? 'НОВИЧОК' : 'ROOKIE')}</button>
+            <button type="button" className={`tog${level === 'pro' ? ' tog-on' : ''}`} onClick={() => onLevel('pro')}>{(lang === 'ru' ? 'ЭКСПЕРТ' : 'PRO')}</button>
           </div>
         </div>
 
         {mode === 'replay' && sessionId && onSeek && (
           <div className="settings-group drawer-panels-group">
-            <div className="settings-group-label">HIGHLIGHTS &amp; DOTD</div>
+            <div className="settings-group-label">{(lang === 'ru' ? 'МОМЕНТЫ И DOTD' : 'HIGHLIGHTS & DOTD')}</div>
             <div className="drawer-panels-inner">
               <HighlightsPanel sessionId={sessionId} lang={lang} untilMs={atMs} onSeek={(ms) => { onSeek(ms); onClose() }} />
               <DriverOfDayPanel sessionId={sessionId} lang={lang} sessionStatus={sessionStatus} lap={lap} totalLaps={totalLaps} atMs={atMs} />

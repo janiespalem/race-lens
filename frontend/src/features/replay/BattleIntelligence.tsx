@@ -2,12 +2,14 @@ import { useMemo } from 'react'
 import type { Battle, DriverState, WeatherState } from '../../api/types'
 import { battleGap, battlePair } from '../../lib/battles'
 import { formatLapTime } from '../../lib/format'
+import { compoundLabel } from '../../lib/stints'
 import { formatWeather } from '../../lib/weather'
 import { teamColor } from './teamColors'
 
 type DriverRow = { id: string } & DriverState
 
 type Props = {
+  lang?: 'en' | 'ru'
   rows: DriverRow[]
   battles: Battle[]
   currentLap: number
@@ -26,6 +28,7 @@ const recentPace = (driver: DriverRow): number | null => {
 }
 
 export function BattleIntelligence({
+  lang = 'en',
   rows,
   battles,
   currentLap,
@@ -47,28 +50,28 @@ export function BattleIntelligence({
     .sort((a, b) => a.average - b.average)
     .slice(0, 7), [rows])
   const fastestPace = pace[0]?.average
-  const weatherSummary = formatWeather(weather)
+  const weatherSummary = formatWeather(weather, lang)
 
   return (
-    <section className="battle-intelligence" aria-label="Battle intelligence">
+    <section className="battle-intelligence" aria-label={lang === 'ru' ? 'Анализ борьбы' : 'Battle intelligence'}>
       <div className="bi-grid">
         {rows.length === 0 ? (
           <div className="bi-formation">
-            <small>SESSION READY</small>
-            <strong>FORMATION LAP</strong>
+            <small>{lang === 'ru' ? 'СЕССИЯ ГОТОВА' : 'SESSION READY'}</small>
+            <strong>{lang === 'ru' ? 'ПРОГРЕВОЧНЫЙ КРУГ' : 'FORMATION LAP'}</strong>
           </div>
         ) : (
           <>
         <article className="bi-card bi-flow">
           <div className="bi-card-head">
-            <b>TOP 3</b>
+            <b>{lang === 'ru' ? 'ТРОЙКА ЛИДЕРОВ' : 'TOP 3'}</b>
           </div>
           <div className="bi-flow-list">
             {leadFlow.map((driver, index) => (
               <div key={driver.id}>
                 {index > 0 && (
                   <div className={`bi-gap-link${(driver.interval_s ?? 99) <= 1 ? ' hot' : ''}`}>
-                    {driver.interval_s != null ? `${driver.interval_s.toFixed(2)}s` : '—'}
+                    {driver.interval_s != null ? `${driver.interval_s.toFixed(2)}${lang === 'ru' ? 'с' : 's'}` : '—'}
                   </div>
                 )}
                 <button
@@ -80,37 +83,37 @@ export function BattleIntelligence({
                   <i style={{ background: teamColor(driver.id) }} />
                   <strong>{driver.id}</strong>
                   <span className="bi-driver-meta">
-                    <b>{driver.retired ? 'OUT' : `${driver.tyre_compound ?? 'Unknown'} · ${driver.tyre_age_laps ?? '—'} laps`}</b>
+                    <b>{driver.retired ? (lang === 'ru' ? 'СХОД' : 'OUT') : `${compoundLabel(driver.tyre_compound, lang)} · ${driver.tyre_age_laps ?? '—'} ${lang === 'ru' ? 'кр.' : 'laps'}`}</b>
                     <small>{formatLapTime(driver.last_lap_ms)}</small>
                   </span>
                   <span className="bi-driver-gap">
-                    {index === 0 ? 'LEADER' : driver.gap_s != null ? `+${driver.gap_s.toFixed(2)}` : '—'}
+                    {index === 0 ? (lang === 'ru' ? 'ЛИДЕР' : 'LEADER') : driver.gap_s != null ? `+${driver.gap_s.toFixed(2)}` : '—'}
                   </span>
                 </button>
               </div>
             ))}
-            {leadFlow.length === 0 && <div className="bi-empty">Waiting for classification…</div>}
+            {leadFlow.length === 0 && <div className="bi-empty">{lang === 'ru' ? 'Ожидание классификации…' : 'Waiting for classification…'}</div>}
           </div>
         </article>
 
         <article className="bi-card bi-state">
           <div className="bi-card-head">
-            <b>RACE</b>
+            <b>{lang === 'ru' ? 'ГОНКА' : 'RACE'}</b>
             {weatherSummary && <span>{weatherSummary}</span>}
           </div>
           <div className="bi-lap">
-            {currentLap || '—'} <small>/ {totalLaps ?? '—'} LAPS</small>
+            {currentLap || '—'} <small>/ {totalLaps ?? '—'} {lang === 'ru' ? 'КР.' : 'LAPS'}</small>
           </div>
           <div className="bi-state-grid">
-            <div><span>LEADER</span><strong>{rows[0]?.id ?? '—'}</strong></div>
-            <div><span>FASTEST</span><strong>{fastest?.id ?? '—'}</strong></div>
-            <div><span>RUNNING</span><strong>{rows.filter((row) => !row.retired).length}</strong></div>
+            <div><span>{lang === 'ru' ? 'ЛИДЕР' : 'LEADER'}</span><strong>{rows[0]?.id ?? '—'}</strong></div>
+            <div><span>{lang === 'ru' ? 'БЫСТРЕЙШИЙ' : 'FASTEST'}</span><strong>{fastest?.id ?? '—'}</strong></div>
+            <div><span>{lang === 'ru' ? 'НА ТРАССЕ' : 'RUNNING'}</span><strong>{rows.filter((row) => !row.retired).length}</strong></div>
           </div>
         </article>
 
         <article className="bi-card bi-battles">
           <div className="bi-card-head">
-            <b>ACTIVE BATTLES · {battles.length}</b>
+            <b>{lang === 'ru' ? 'БОРЬБА НА ТРАССЕ' : 'ACTIVE BATTLES'} · {battles.length}</b>
           </div>
           <div className="bi-battle-list">
             {battles.slice(0, 5).map((battle) => {
@@ -130,17 +133,17 @@ export function BattleIntelligence({
                   <span>P{leader?.position ?? '—'}</span>
                   <strong>{leaderId} / {chaserId}</strong>
                   <i><b style={{ width: `${strength}%` }} /></i>
-                  <em>{gap.toFixed(2)}s</em>
+                  <em>{gap.toFixed(2)}{lang === 'ru' ? 'с' : 's'}</em>
                 </button>
               )
             })}
-            {battles.length === 0 && <div className="bi-empty">No active battles right now.</div>}
+            {battles.length === 0 && <div className="bi-empty">{lang === 'ru' ? 'Сейчас активной борьбы нет.' : 'No active battles right now.'}</div>}
           </div>
         </article>
 
         <article className="bi-card bi-pace">
           <div className="bi-card-head">
-            <b>5-LAP PACE</b>
+            <b>{lang === 'ru' ? 'ТЕМП ЗА 5 КРУГОВ' : '5-LAP PACE'}</b>
           </div>
           <div className="bi-pace-list">
             {pace.map(({ row, average }) => {
@@ -156,11 +159,11 @@ export function BattleIntelligence({
                   <i style={{ background: teamColor(row.id) }} />
                   <strong>{row.id}</strong>
                   <span>{formatLapTime(average)}</span>
-                  <em>{delta === 0 ? 'FASTEST' : `+${(delta / 1000).toFixed(3)}s`}</em>
+                  <em>{delta === 0 ? (lang === 'ru' ? 'ЛУЧШИЙ' : 'FASTEST') : `+${(delta / 1000).toFixed(3)}${lang === 'ru' ? 'с' : 's'}`}</em>
                 </button>
               )
             })}
-            {pace.length === 0 && <div className="bi-empty">Complete a lap to compare pace.</div>}
+            {pace.length === 0 && <div className="bi-empty">{lang === 'ru' ? 'Для сравнения темпа нужен завершённый круг.' : 'Complete a lap to compare pace.'}</div>}
           </div>
         </article>
           </>

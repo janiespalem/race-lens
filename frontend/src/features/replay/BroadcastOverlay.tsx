@@ -89,11 +89,11 @@ export function BroadcastOverlay({ atMs, playing, speed, lang, markers, feed }: 
         type="button"
         className="broadcast-overlay__close"
         onClick={dismiss}
-        aria-label="Dismiss race update"
+        aria-label={lang === 'ru' ? 'Закрыть сообщение о гонке' : 'Dismiss race update'}
       >×</button>
       <div className="broadcast-overlay__body">
         <strong>{displayed.title}</strong>
-        <small>{displayed.lap ? `LAP ${displayed.lap}` : 'RACE UPDATE'} · REPLAY EVENT</small>
+        <small>{displayed.lap ? `${lang === 'ru' ? 'КРУГ' : 'LAP'} ${displayed.lap}` : (lang === 'ru' ? 'СОБЫТИЕ ГОНКИ' : 'RACE UPDATE')} · {lang === 'ru' ? 'СОБЫТИЕ ПОВТОРА' : 'REPLAY EVENT'}</small>
       </div>
     </aside>
   )
