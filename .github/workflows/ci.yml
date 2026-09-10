@@ -78,3 +78,20 @@ jobs:
           for script in scripts/check-*.ts; do
             node "$script"
           done
+
+  android:
+    name: Android (Pocket, Java 17)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - name: Compile and test Pocket
+        run: |
+          cd android
+          ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
