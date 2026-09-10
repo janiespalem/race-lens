@@ -86,15 +86,21 @@ fun conditionsSummary(weather: Weather) = buildList {
 
 const val WEATHER_STALE_MS = 300_000L
 
-/** Age/staleness of the OLDEST source-reported weather field; null when unknown.
+/** Age/staleness of the OLDEST displayed weather field; null when unknown.
  *
- * A fresh air reading must not hide a stale track/rain value: the label
- * reflects the worst displayed field, never the newest.
+ * Hidden fields such as humidity are not rendered and must not drive the
+ * badge. Only non-null rainfall, track and air temperature observations
+ * count, so a fresh air reading never hides a stale track/rain value.
  */
 fun weatherAgeLabel(weather: Weather, atMs: Long): String? {
     val observed = weather.observedAtMs
-    if (observed.isEmpty()) return null
-    val worst = observed.values.maxOf { (atMs - it).coerceAtLeast(0) }
+    val displayed = buildList {
+        if (weather.rainfall != null) observed["rainfall"]?.let { add(it) }
+        if (weather.trackTempC != null) observed["track_temp_c"]?.let { add(it) }
+        if (weather.airTempC != null) observed["air_temp_c"]?.let { add(it) }
+    }
+    if (displayed.isEmpty()) return null
+    val worst = displayed.maxOf { (atMs - it).coerceAtLeast(0) }
     val minutes = worst / 60_000
     return if (worst >= WEATHER_STALE_MS) "WEATHER STALE · ${minutes}M" else "SOURCE AGE ${minutes}M"
 }
