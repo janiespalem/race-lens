@@ -332,6 +332,29 @@ class WeatherFreshnessTest {
     fun weatherAgeIsUnknownForLegacySnapshotsWithoutObservationTimes() {
         assertNull(weatherAgeLabel(Weather(null, null, null, emptyMap()), 100_000))
     }
+
+    @Test
+    fun weatherAgeIgnoresHiddenFieldsLikeHumidity() {
+        val weather = Weather(
+            true, 32.9, 18.7,
+            mapOf(
+                "rainfall" to 115_000L,
+                "track_temp_c" to 115_000L,
+                "air_temp_c" to 110_000L,
+                "humidity_percent" to 0L,
+            ),
+        )
+        assertEquals("SOURCE AGE 0M", weatherAgeLabel(weather, 120_000))
+    }
+
+    @Test
+    fun weatherAgeKeepsStaleRainfallEvenWhenAirIsFresh() {
+        val weather = Weather(
+            true, null, 18.7,
+            mapOf("rainfall" to 0L, "air_temp_c" to 460_000L),
+        )
+        assertEquals("WEATHER STALE · 7M", weatherAgeLabel(weather, 460_000))
+    }
 }
 
 class WeatherObservedParsingTest {
