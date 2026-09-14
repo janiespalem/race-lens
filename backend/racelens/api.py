@@ -1460,7 +1460,14 @@ def feed(
 ) -> list:
     """Event feed for the frontend: spoiler-free, newest-first human-readable items."""
     eng = _engine(session_id)
-    return render_feed(eng.events, max(0, until_ms), lang=lang, limit=limit)
+    cutoff_ms = max(0, until_ms)
+    if (
+        eng.events
+        and cutoff_ms >= _race_end_ms(eng)
+        and eng.state_at(cutoff_ms)["session_status"] == "finished"
+    ):
+        cutoff_ms = max(cutoff_ms, eng.events[-1].session_time_ms)
+    return render_feed(eng.events, cutoff_ms, lang=lang, limit=limit)
 
 
 @app.get("/api/sessions/{session_id}/markers")
