@@ -23,6 +23,8 @@ DETECTORS = (
 def detect_all(state: dict[str, Any]) -> list[dict[str, Any]]:
     if state.get("session_status") in {"red_flag", "safety_car", "vsc"}:
         return detect_sc_pit(state)
+    if state.get("session_status") != "started":
+        return []
     out = []
     for d in DETECTORS:
         out.extend(d(state))

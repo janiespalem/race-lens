@@ -82,3 +82,38 @@ def test_registry_only_emits_neutralization_insights_under_safety_car():
     assert {item["type"] for item in detect_all(state)} == {"SC_PIT_WINDOW"}
     state["session_status"] = "vsc"
     assert detect_all(state) == []
+
+
+def test_registry_emits_no_actionable_insights_after_finish():
+    state = {
+        "session_id": "race",
+        "at_ms": 6_000_000,
+        "lap": 57,
+        "total_laps": 57,
+        "session_status": "finished",
+        "classification": ["A", "B"],
+        "drivers": {
+            "A": {
+                "position": 1,
+                "gap_s": 0.0,
+                "interval_s": None,
+                "last_lap_ms": 80_000,
+                "tyre_age_laps": 20,
+                "in_pit": False,
+                "retired": False,
+                "recent_laps_ms": [],
+            },
+            "B": {
+                "position": 2,
+                "gap_s": 50.0,
+                "interval_s": 50.0,
+                "last_lap_ms": 81_000,
+                "tyre_age_laps": 20,
+                "in_pit": False,
+                "retired": False,
+                "recent_laps_ms": [],
+            },
+        },
+    }
+
+    assert detect_all(state) == []
