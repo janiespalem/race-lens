@@ -47,7 +47,7 @@ from racelens.driver_of_day import (
     driver_of_day as _driver_of_day,
     load_official_award,
 )
-from racelens.events.models import load_jsonl
+from racelens.events.models import event, load_jsonl
 from racelens.highlights import highlights as _highlights
 from racelens.forecast.overtake import overtake_probability
 from racelens.forecast.pit_sim import simulate_pit
@@ -428,8 +428,25 @@ def _fixture_lease(session_id: str, suffix: str = ".jsonl") -> Iterator[Path]:
 LIGHTS_OUT_MS = 180_000
 
 
+def _formation_order(positions: dict | None) -> tuple[str, ...]:
+    if not positions or not isinstance(positions.get("progress"), dict):
+        return ()
+    ranked = []
+    for driver_id, frames in positions["progress"].items():
+        progress = frames[0] if isinstance(frames, list) and frames else None
+        if isinstance(driver_id, str) and type(progress) in {int, float}:
+            ranked.append((float(progress), driver_id))
+    return tuple(driver_id for _, driver_id in sorted(ranked, key=lambda item: (-item[0], item[1])))
+
+
 @lru_cache(maxsize=SESSION_CACHE_SIZE)
-def _engine_cached(session_id: str, fixtures_dir: str, mtime: float) -> ReplayEngine:
+def _engine_cached(
+    session_id: str,
+    fixtures_dir: str,
+    mtime: float,
+    has_positions: bool = False,
+    formation_order: tuple[str, ...] = (),
+) -> ReplayEngine:
     # mtime is part of the cache key: regenerating a fixture on disk must not
     # keep serving the stale engine (bit us when re-ingesting live recordings).
     fixtures_dir_path = Path(fixtures_dir)
@@ -439,9 +456,28 @@ def _engine_cached(session_id: str, fixtures_dir: str, mtime: float) -> ReplayEn
     events = load_jsonl(path.read_text(encoding="utf-8"))
     # Only sessions with formation-lap telemetry (a positions.json) get the lead
     # shift; others keep lights-out at 0 (no empty pre-roll).
-    if (fixtures_dir_path / f"{session_id}.positions.json").is_file():
+    if has_positions:
         for e in events:
             e.session_time_ms += LIGHTS_OUT_MS
+    if formation_order:
+        initial = next((item for item in events if item.type == "SessionStarted"), None)
+        initial_payload = dict(initial.payload) if initial is not None else {}
+        initial_payload["formation"] = True
+        internal_session_id = initial.session_id if initial is not None else session_id
+        events = [
+            event(
+                internal_session_id, "SessionStarted", 0,
+                source="positions", **initial_payload,
+            ),
+            *(
+                event(
+                    internal_session_id, "PositionChanged", 0, driver_id,
+                    source="positions", position=position,
+                )
+                for position, driver_id in enumerate(formation_order, start=1)
+            ),
+            *events,
+        ]
     return ReplayEngine(events)
 
 
@@ -454,8 +490,20 @@ def _engine(session_id: str) -> ReplayEngine:
     with _fixture_lease(session_id) as fixtures_dir:
         path = fixtures_dir / f"{session_id}.jsonl"
         mtime = path.stat().st_mtime if path.is_file() else 0.0
+        positions_path = fixtures_dir / f"{session_id}.positions.json"
         with _engine_load_lock:
-            return _engine_cached(session_id, str(fixtures_dir), mtime)
+            positions = _positions_data_cached(
+                session_id,
+                str(fixtures_dir),
+                positions_path.stat().st_mtime if positions_path.is_file() else 0.0,
+            )
+            return _engine_cached(
+                session_id,
+                str(fixtures_dir),
+                mtime,
+                positions_path.is_file(),
+                _formation_order(positions),
+            )
 
 
 @lru_cache(maxsize=1)  # One parsed payload keeps Render's 512 MB instance bounded.
@@ -534,6 +582,16 @@ def _attach_frame(state: dict, session_id: str | None = None) -> dict:
         d["x"], d["y"] = (pt[0], pt[1]) if pt else (None, None)
         pframes = prog.get(drv)
         d["progress"] = pframes[tick] if pframes and 0 <= tick < len(pframes) else None
+    if state.get("session_status") in {"formation", "started"} and state.get("lap") == 0:
+        state["classification"].sort(
+            key=lambda driver: (
+                state["drivers"][driver]["progress"] is None,
+                -(state["drivers"][driver]["progress"] or 0),
+            )
+        )
+        for rank, driver in enumerate(state["classification"], start=1):
+            state["drivers"][driver]["position"] = rank
+            state["drivers"][driver]["rank"] = rank
     state["frame_source"] = "replay"
     state["viewbox"] = pos.get("viewbox", [600, 400])
     return state
