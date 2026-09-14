@@ -401,7 +401,8 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
                 if emit_activity and (now_stopped or was_stopped is not None):
                     if was_stopped != now_stopped:
                         events.append(event(
-                            sid, "DriverStoppedChanged", t_ms, d, stopped=now_stopped,
+                            sid, "DriverStoppedChanged", t_ms, d,
+                            source="f1live", stopped=now_stopped,
                         ))
 
     def apply_tyres(lines: dict, t_ms: int) -> None:
@@ -561,7 +562,10 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
 
     for driver_id, (retired_at, lap) in retirement_candidates.items():
         if latest_ms - retired_at >= _RETIRE_CONFIRM_MS:
-            events.append(event(sid, "RetirementDetected", retired_at, driver_id, lap=lap))
+            events.append(event(
+                sid, "RetirementDetected", retired_at, driver_id,
+                lap=lap, source="f1live",
+            ))
 
     pit_times: dict[str, list[int]] = {}
     for item in events:
