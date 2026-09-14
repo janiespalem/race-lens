@@ -143,6 +143,88 @@ def test_attach_frame_merges_xy_progress_by_tick(tmp_path, monkeypatch):
     assert state2["drivers"]["VER"]["x"] is None
 
 
+def test_formation_state_uses_current_telemetry_order_without_future_results(
+    tmp_path, monkeypatch,
+):
+    import json
+
+    import racelens.api as api
+
+    session_id = "formation_race"
+    race_events = [
+        event(session_id, "SessionStarted", 0, total_laps=2),
+        # The later race order is deliberately the opposite of formation telemetry.
+        event(session_id, "PositionChanged", 10_000, "A", position=1),
+        event(session_id, "PositionChanged", 10_000, "B", position=2),
+    ]
+    (tmp_path / f"{session_id}.jsonl").write_text(
+        dump_jsonl(race_events), encoding="utf-8",
+    )
+    (tmp_path / f"{session_id}.positions.json").write_text(json.dumps({
+        "session_id": session_id,
+        "tick_ms": 1_000,
+        "start_ms": 0,
+        "viewbox": [600, 400],
+        "drivers": {
+            "A": [[1.0, 1.0]] * 181,
+            "B": [[2.0, 2.0]] * 181,
+        },
+        "progress": {
+            "A": [0.8] * 180 + [1.9],
+            "B": [0.7] * 180 + [2.0],
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(api, "FIXTURES_DIR", tmp_path)
+    client = TestClient(api.app)
+
+    state = client.get(
+        f"/api/sessions/{session_id}/state", params={"at_ms": 0},
+    ).json()
+
+    assert state["session_status"] == "formation"
+    assert state["total_laps"] == 2
+    assert state["classification"] == ["A", "B"]
+    assert [state["drivers"][driver]["position"] for driver in ("A", "B")] == [1, 2]
+    assert state["drivers"]["A"]["progress"] == 0.8
+
+    lights_out = client.get(
+        f"/api/sessions/{session_id}/state", params={"at_ms": 180_000},
+    ).json()
+    assert lights_out["session_status"] == "started"
+    assert lights_out["classification"] == ["B", "A"]
+
+
+def test_positions_without_initial_progress_still_shift_race_events(
+    tmp_path, monkeypatch,
+):
+    import json
+
+    import racelens.api as api
+
+    session_id = "formation_without_order"
+    (tmp_path / f"{session_id}.jsonl").write_text(
+        dump_jsonl([event(session_id, "SessionStarted", 0)]), encoding="utf-8",
+    )
+    (tmp_path / f"{session_id}.positions.json").write_text(json.dumps({
+        "tick_ms": 1_000,
+        "start_ms": 0,
+        "drivers": {"A": [None]},
+        "progress": {"A": [None]},
+    }), encoding="utf-8")
+    monkeypatch.setattr(api, "FIXTURES_DIR", tmp_path)
+    client = TestClient(api.app)
+
+    before_start = client.get(
+        f"/api/sessions/{session_id}/state", params={"at_ms": 0},
+    ).json()
+    at_start = client.get(
+        f"/api/sessions/{session_id}/state", params={"at_ms": 180_000},
+    ).json()
+
+    assert before_start["session_status"] == "unknown"
+    assert at_start["session_status"] == "started"
+
+
 @pytest.mark.parametrize("path,extra_params", [
     ("forecast", {"laps": 5}),
     ("simulate-pit", {"driver": "VER"}),
