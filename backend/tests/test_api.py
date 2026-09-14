@@ -351,3 +351,39 @@ def test_timeline_includes_short_post_race_radio_not_late_steward_messages():
     ]
 
     assert api._race_end_ms(api.ReplayEngine(events)) == 300_000
+
+
+def test_feed_at_playable_end_includes_late_steward_outcome(tmp_path, monkeypatch):
+    import racelens.api as api
+
+    session_id = "post_race_feed"
+    late_message = "FIA STEWARDS: 5 SECOND TIME PENALTY FOR CAR 10 - PIT SPEEDING"
+    events = mini_race() + [
+        event(
+            session_id, "RaceControlMessage", 300_000, "VER",
+            category="Radio", message="RADIO: VER",
+            audio_url="https://provider.test/ver.mp3",
+        ),
+        event(
+            session_id, "RaceControlMessage", 450_000,
+            category="Other", message=late_message,
+        ),
+    ]
+    events = [item.model_copy(update={"session_id": session_id}) for item in events]
+    (tmp_path / f"{session_id}.jsonl").write_text(
+        dump_jsonl(events), encoding="utf-8",
+    )
+    monkeypatch.setattr(api, "FIXTURES_DIR", tmp_path)
+    client = TestClient(api.app)
+
+    before_end = client.get(
+        f"/api/sessions/{session_id}/feed",
+        params={"until_ms": 299_999, "limit": 100},
+    ).json()
+    at_end = client.get(
+        f"/api/sessions/{session_id}/feed",
+        params={"until_ms": 300_000, "limit": 100},
+    ).json()
+
+    assert not any(item["text"] == late_message for item in before_end)
+    assert any(item["text"] == late_message for item in at_end)
