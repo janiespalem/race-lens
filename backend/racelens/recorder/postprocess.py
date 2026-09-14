@@ -155,6 +155,18 @@ def _weather(event_: Event) -> bool:
     )
 
 
+def _driver_status(event_: Event) -> bool:
+    if event_.source != "f1live" or not event_.driver_id:
+        return False
+    if event_.type == "DriverStoppedChanged":
+        return set(event_.payload) == {"stopped"} and type(event_.payload["stopped"]) is bool
+    return (
+        event_.type == "RetirementDetected"
+        and not event_.payload
+        and (event_.lap is None or event_.lap > 0)
+    )
+
+
 def _radio_key(event_: Event) -> tuple[object, ...]:
     payload = event_.payload
     path = str(payload.get("audio_path") or "")
@@ -207,9 +219,9 @@ def merge_captured_radio(
 ) -> MergeReport:
     """Atomically enrich a canonical FastF1 fixture with captured F1 live data.
 
-    Captured radio and validated weather are retained; other non-canonical
-    events are ignored. Radio is deduped by source identity and weather by its
-    deterministic event identity.
+    Captured radio, validated weather, and source-backed driver status are
+    retained; other non-canonical events are ignored. Radio is deduped by
+    source identity and the remaining events by deterministic event identity.
     """
     canonical_path = Path(canonical_path)
     captured_path = Path(captured_path)
@@ -222,7 +234,8 @@ def merge_captured_radio(
     session_id = next(iter(session_ids))
     captured_radio = [event_ for event_ in captured if _radio(event_)]
     captured_weather = [event_ for event_ in captured if _weather(event_)]
-    if not captured_radio and not captured_weather:
+    captured_status = [event_ for event_ in captured if _driver_status(event_)]
+    if not captured_radio and not captured_weather and not captured_status:
         written = destination != canonical_path
         if written:
             atomic_write_text(destination, dump_jsonl(canonical))
@@ -236,17 +249,17 @@ def merge_captured_radio(
         else:
             fixed.append(event_)
     fixed_ids = {event_.event_id for event_ in fixed}
-    for event_ in captured_weather:
+    for event_ in captured_weather + captured_status:
         payload = dict(event_.payload)
-        weather = event_.model_copy(update={
+        captured_event = event_.model_copy(update={
             "session_id": session_id,
             "event_id": make_event_id(
                 session_id, event_.type, event_.session_time_ms, event_.driver_id, payload,
             ),
         })
-        if weather.event_id not in fixed_ids:
-            fixed.append(weather)
-            fixed_ids.add(weather.event_id)
+        if captured_event.event_id not in fixed_ids:
+            fixed.append(captured_event)
+            fixed_ids.add(captured_event.event_id)
     canonical_radio_keys = set(groups)
     for event_ in captured_radio:
         groups.setdefault(_radio_key(event_), []).append((False, event_))

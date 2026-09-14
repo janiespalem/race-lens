@@ -168,6 +168,44 @@ def test_merge_preserves_only_valid_source_backed_weather(tmp_path):
     assert merged == sorted(merged, key=lambda item: (item.session_time_ms, item.event_id))
 
 
+def test_merge_preserves_only_valid_source_backed_driver_status(tmp_path):
+    canonical = tmp_path / "canonical.jsonl"
+    captured = tmp_path / "captured.jsonl"
+    _write(canonical, [event("canonical", "SessionStarted", 0)])
+    _write(captured, [
+        event(
+            "live", "DriverStoppedChanged", 2_000, "HAM",
+            source="f1live", stopped=True,
+        ),
+        event(
+            "live", "RetirementDetected", 12_000, "HAM", lap=2,
+            source="f1live",
+        ),
+        event(
+            "live", "DriverStoppedChanged", 3_000, "NOR",
+            source="fixture", stopped=True,
+        ),
+        event(
+            "live", "DriverStoppedChanged", 4_000, "LEC",
+            source="f1live", stopped="yes",
+        ),
+    ])
+
+    merge_captured_radio(canonical, captured)
+    merged = load_jsonl(canonical.read_text(encoding="utf-8"))
+    statuses = [
+        item for item in merged
+        if item.type in {"DriverStoppedChanged", "RetirementDetected"}
+    ]
+
+    assert [(item.type, item.driver_id, item.lap, item.payload) for item in statuses] == [
+        ("DriverStoppedChanged", "HAM", None, {"stopped": True}),
+        ("RetirementDetected", "HAM", 2, {}),
+    ]
+    assert all(item.session_id == "canonical" for item in statuses)
+    assert all(item.source == "f1live" for item in statuses)
+
+
 def test_validate_archive_reports_schema_and_coverage(tmp_path):
     report = validate_archive(*_archive(tmp_path))
 

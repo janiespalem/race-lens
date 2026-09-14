@@ -401,6 +401,28 @@ def test_transient_retired_pulse_is_ignored(tmp_path):
     assert not any(event.type == "RetirementDetected" for event in events)
 
 
+def test_confirmed_driver_status_is_marked_as_f1live_source(tmp_path):
+    feed = tmp_path / "confirmed-retirement.txt"
+    feed.write_text("\n".join([
+        "['SessionStatus', {'Status': 'Started'}, '2026-07-05T15:00:00.000Z']",
+        "['DriverList', {'44': {'Tla': 'HAM'}}, '2026-07-05T15:00:01.000Z']",
+        "['TimingData', {'Lines': {'44': {'Retired': True, 'Stopped': True}}}, "
+        "'2026-07-05T15:01:00.000Z']",
+        "['Heartbeat', {'Utc': '2026-07-05T15:01:15.000Z'}, "
+        "'2026-07-05T15:01:15.000Z']",
+    ]) + "\n", encoding="utf-8")
+
+    statuses = [
+        item for item in ingest_f1live(str(feed), session_id="test")
+        if item.type in {"DriverStoppedChanged", "RetirementDetected"}
+    ]
+
+    assert {item.type for item in statuses} == {
+        "DriverStoppedChanged", "RetirementDetected",
+    }
+    assert all(item.source == "f1live" for item in statuses)
+
+
 @pytest.mark.parametrize("message,status", [
     ("SAFETY CAR DEPLOYED", "safety_car"),
     ("VSC DEPLOYED", "vsc"),
