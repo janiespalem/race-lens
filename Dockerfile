@@ -9,8 +9,14 @@ RUN npm run build
 
 FROM python:3.12-slim
 WORKDIR /app
+
+# Keep third-party dependencies in a source-independent layer.  The editable
+# install points at /app/backend; the complete implementation is copied after
+# the install so ordinary Python edits do not invalidate dependency downloads.
+COPY backend/pyproject.toml ./backend/pyproject.toml
+COPY backend/racelens/__init__.py ./backend/racelens/__init__.py
+RUN pip install --no-cache-dir -e "./backend[api,storage]"
 COPY backend/ ./backend/
-RUN pip install --no-cache-dir ./backend[api,storage]
 COPY --from=web /app/dist ./frontend/dist
 ENV RACELENS_FIXTURES=/app/backend/fixtures \
     RACELENS_DIST=/app/frontend/dist \
