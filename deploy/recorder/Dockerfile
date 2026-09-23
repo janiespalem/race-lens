@@ -5,16 +5,22 @@ COPY rust/race-core/src ./src
 RUN cargo build --release --locked
 
 FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
-ARG VCS_REF=unknown
-LABEL org.opencontainers.image.revision=$VCS_REF
+
+WORKDIR /opt/race-lens/backend
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY backend/ /build/backend/
-RUN pip install --no-cache-dir "/build/backend[recorder,storage]" \
-    && rm -rf /build
+# Install the dependency graph before copying the full implementation.  The
+# editable package remains rooted here, so the later COPY supplies the complete
+# module without a second build/install pass.
+COPY backend/pyproject.toml ./pyproject.toml
+COPY backend/racelens/__init__.py ./racelens/__init__.py
+RUN pip install --no-cache-dir -e ".[recorder,storage]"
+COPY backend/racelens/ ./racelens/
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.revision=$VCS_REF
 COPY --from=race-core /build/target/release/race-core /usr/local/bin/race-core
 COPY deploy/recorder/run.sh /usr/local/bin/race-lens-recorder
 RUN chmod 0555 /usr/local/bin/race-lens-recorder /usr/local/bin/race-core \

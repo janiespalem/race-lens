@@ -1,4 +1,8 @@
 **/node_modules
+**/.gradle
+**/.venv
+**/build
+**/target
 frontend/dist
 **/__pycache__
 **/.pytest_cache
