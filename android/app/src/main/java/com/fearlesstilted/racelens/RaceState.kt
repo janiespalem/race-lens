@@ -152,7 +152,8 @@ fun parseWatchLink(raw: String): WatchTarget? = runCatching {
     if (!https && !app) return null
     val query = uri.rawQuery.orEmpty().split('&').associate {
         val (key, value) = it.split('=', limit = 2).let { pair -> pair[0] to pair.getOrElse(1) { "" } }
-        java.net.URLDecoder.decode(key, Charsets.UTF_8) to java.net.URLDecoder.decode(value, Charsets.UTF_8)
+        java.net.URLDecoder.decode(key, Charsets.UTF_8.name()) to
+            java.net.URLDecoder.decode(value, Charsets.UTF_8.name())
     }
     val mode = when (query["mode"]) {
         "replay" -> WatchMode.REPLAY
