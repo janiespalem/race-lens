@@ -30,9 +30,37 @@ jobs:
           cd backend
           pip install -e ".[dev,api,storage,tui]"
           pip freeze | grep -v '^-e ' > "$RUNNER_TEMP/racelens-requirements.txt"
+          pip install --dry-run --ignore-installed \
+            --report "$RUNNER_TEMP/racelens-recorder-report.json" \
+            ".[recorder,storage]"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          temp = Path(os.environ["RUNNER_TEMP"])
+          report = json.loads((temp / "racelens-recorder-report.json").read_text())
+          pins = sorted(
+              {
+                  f"{metadata['name']}=={metadata['version']}"
+                  for item in report["install"]
+                  if (metadata := item["metadata"])["name"] != "racelens"
+              }
+          )
+          (temp / "racelens-recorder-requirements.txt").write_text(
+              "\n".join(pins) + "\n"
+          )
+          PY
           pip install pip-audit==2.10.1
       - name: Audit Python dependencies
-        run: pip-audit --requirement "$RUNNER_TEMP/racelens-requirements.txt" --no-deps
+        run: |
+          pip-audit --requirement "$RUNNER_TEMP/racelens-requirements.txt" --no-deps
+          # signalrcore 1.0.2 (latest) pins msgpack==1.1.2 exactly. Keep the
+          # recorder graph visible while containing the upstream exception.
+          pip-audit \
+            --requirement "$RUNNER_TEMP/racelens-recorder-requirements.txt" \
+            --no-deps \
+            --ignore-vuln PYSEC-2026-3625
       - name: Run tests
         run: |
           cd backend
