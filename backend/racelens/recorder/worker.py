@@ -928,17 +928,29 @@ class Recorder:
             )
         )
         next_capture = min(capture_deadlines, default=None)
-        if (
+        approaching_capture = (
             next_capture is not None
             and next_capture[0] <= now + REMOTE_CAPTURE_GUARD
-        ):
+        )
+        due_processing_retries = {
+            session_id
+            for session_id, item in state.sessions.items()
+            if (
+                item.phase is Phase.FAILED
+                and state.due_phase(session_id, now) is Phase.PROCESSING
+            )
+        }
+        if approaching_capture and not due_processing_retries:
             return (
                 f"idle: next capture {next_capture[1]} at "
                 f"{next_capture[0].isoformat()} (approaching)"
             )
 
-        # Outside the capture guard, archive processing precedes idle and remote work.
+        # A due processing retry must not starve behind successive capture guards.
+        # Other archive work still yields while a capture is approaching.
         for session_id, item in state.sessions.items():
+            if approaching_capture and session_id not in due_processing_retries:
+                continue
             due = state.due_phase(session_id, now)
             if item.phase in {Phase.CAPTURED, Phase.PROCESSING}:
                 due = Phase.PROCESSING
