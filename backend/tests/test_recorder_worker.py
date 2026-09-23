@@ -201,6 +201,35 @@ def test_approaching_capture_precedes_older_captured_archive(tmp_path, monkeypat
     assert processes == []
 
 
+def test_due_processing_retry_precedes_approaching_capture(tmp_path, monkeypatch):
+    now = datetime(2026, 7, 19, 12, 55, tzinfo=UTC)
+    retry_session = ScheduledSession(
+        2026, 12, "Dutch Grand Prix", "FP1", now - timedelta(hours=3),
+    )
+    later = ScheduledSession(
+        2026, 13, "Belgian Grand Prix", "FP1", now + timedelta(hours=1, minutes=10),
+    )
+    recorder = Recorder(_config(tmp_path), now=lambda: now)
+    recorder.store.transition(retry_session.session_id, Phase.RECORDING, now)
+    recorder.store.transition(retry_session.session_id, Phase.CAPTURED, now)
+    recorder.store.transition(retry_session.session_id, Phase.PROCESSING, now)
+    recorder.store.transition(
+        retry_session.session_id,
+        Phase.FAILED,
+        now,
+        error="archive not ready",
+        retry_at=now,
+    )
+    monkeypatch.setattr(
+        "racelens.recorder.worker.load_fastf1_schedule",
+        lambda year: [retry_session, later],
+    )
+    monkeypatch.setattr(recorder, "process", lambda _session: None)
+
+    assert recorder.run_once() == f"complete: {retry_session.session_id}"
+    assert recorder.store.load().sessions[retry_session.session_id].phase is Phase.COMPLETE
+
+
 def test_failed_capture_retry_precedes_older_captured_archive(tmp_path, monkeypatch):
     now = datetime(2026, 7, 19, 12, 55, tzinfo=UTC)
     older = ScheduledSession(
