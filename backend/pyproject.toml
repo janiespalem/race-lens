@@ -9,12 +9,12 @@ dependencies = [
 
 [project.optional-dependencies]
 fastf1 = ["fastf1>=3.3"]
-api = ["fastapi>=0.116,<0.117", "uvicorn>=0.29"]
+api = ["fastapi>=0.141,<0.142", "uvicorn>=0.29"]
 storage = ["boto3>=1.35,<2"]
 whisper = ["faster-whisper>=1.0"]
 recorder = ["fastf1==3.8.3", "faster-whisper==1.2.1"]
 tui = ["textual>=8,<9", "httpx>=0.28,<1"]
-dev = ["pytest>=8,<10", "ruff==0.15.16", "httpx>=0.27,<1"]
+dev = ["pytest>=8,<10", "ruff==0.15.16", "httpx>=0.27,<1", "httpx2>=2,<3"]
 
 [project.scripts]
 racelens-tui = "racelens.tui:main"
