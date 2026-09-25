@@ -7,6 +7,74 @@ from racelens.recorder.state import Phase, StateStore
 from racelens.recorder.status import recorder_status
 
 
+def _write_preparation_marker(state_dir, session_id, started_at):
+    (state_dir / "preparation-active.json").write_text(
+        json.dumps({"session_id": session_id, "started_at": started_at.isoformat()}) + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_recorder_status_reports_active_preparation_owner(tmp_path):
+    now = datetime(2026, 9, 25, 13, tzinfo=UTC)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    store = StateStore(state_dir / "recorder.json")
+    store.transition("2026-15-q", Phase.RECORDING, now)
+    store.transition("2026-15-q", Phase.CAPTURED, now)
+    store.transition("2026-15-q", Phase.PROCESSING, now)
+    _write_preparation_marker(state_dir, "2026-15-q", now)
+
+    status = recorder_status(tmp_path, now)
+
+    assert status["preparation"] == {
+        "session_id": "2026-15-q",
+        "age_seconds": 0.0,
+    }
+
+
+def test_recorder_status_ignores_malformed_preparation_marker(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "preparation-active.json").write_text("{" * 5000, encoding="utf-8")
+
+    assert recorder_status(tmp_path)["preparation"] is None
+
+
+def test_recorder_status_ignores_symlinked_preparation_marker(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    target = tmp_path / "foreign.json"
+    target.write_text(
+        '{"session_id":"2026-15-q","started_at":"2026-09-25T13:00:00Z"}\n',
+        encoding="utf-8",
+    )
+    (state_dir / "preparation-active.json").symlink_to(target)
+
+    assert recorder_status(tmp_path)["preparation"] is None
+
+
+def test_recorder_status_ignores_marker_without_processing_owner(tmp_path):
+    now = datetime(2026, 9, 25, 13, tzinfo=UTC)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    _write_preparation_marker(state_dir, "2026-15-q", now)
+
+    assert recorder_status(tmp_path, now)["preparation"] is None
+
+
+def test_recorder_status_ignores_stale_preparation_marker(tmp_path):
+    now = datetime(2026, 9, 25, 13, tzinfo=UTC)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    store = StateStore(state_dir / "recorder.json")
+    store.transition("2026-15-q", Phase.RECORDING, now)
+    store.transition("2026-15-q", Phase.CAPTURED, now)
+    store.transition("2026-15-q", Phase.PROCESSING, now)
+    _write_preparation_marker(state_dir, "2026-15-q", now - timedelta(days=2))
+
+    assert recorder_status(tmp_path, now)["preparation"] is None
+
+
 def test_recorder_status_reports_current_files_without_paths_or_errors(
     tmp_path, monkeypatch, capsys,
 ):
@@ -35,6 +103,7 @@ def test_recorder_status_reports_current_files_without_paths_or_errors(
 
     assert body == {
         "heartbeat_age_seconds": 5.0,
+        "preparation": None,
         "session": {
             "session_id": "2026-10-fp1",
             "phase": "recording",
