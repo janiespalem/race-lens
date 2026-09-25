@@ -2,6 +2,7 @@ import copy
 import asyncio
 import json
 import os
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -42,7 +43,13 @@ def _line(category, payload, timestamp=""):
     return repr([category, payload, timestamp])
 
 
-def _feed_prefix():
+def _feed_prefix(kind="R"):
+    session_name = {
+        "R": "Race",
+        "Q": "Qualifying",
+        "SQ": "Sprint Qualifying",
+        "FP1": "Practice 1",
+    }[kind]
     info = {
         "Meeting": {
             "Key": 15,
@@ -51,9 +58,9 @@ def _feed_prefix():
             "Location": "Zandvoort",
         },
         "Key": 99,
-        "Name": "Race",
+        "Name": session_name,
         "StartDate": "2026-08-23T13:00:00Z",
-        "Path": "2026/Dutch/Race/",
+        "Path": f"2026/Dutch/{session_name.replace(' ', '')}/",
     }
     return [
         _line("SessionInfo", json.dumps(info)),
@@ -156,6 +163,29 @@ def _valid_records(now=NOW):
         "data_quality": "good",
     }
     return pointer, snapshot
+
+
+@pytest.mark.parametrize("kind", ["Q", "SQ"])
+def test_qualifying_session_publishes_live_snapshot(tmp_path, kind):
+    session = replace(SESSION, kind=kind)
+    store = MemoryStore()
+    recorder = Recorder(_config(tmp_path), now=lambda: NOW, object_store=store)
+    feed = recorder._paths(session)["raw"]
+    _write_feed(feed, _feed_prefix(kind))
+
+    assert recorder._publish_live_snapshot(session, feed)
+    assert store.objects["live/current.json"]["canonical_session_id"] == session.session_id
+
+
+def test_practice_session_does_not_publish_live_snapshot(tmp_path):
+    session = replace(SESSION, kind="FP1")
+    store = MemoryStore()
+    recorder = Recorder(_config(tmp_path), now=lambda: NOW, object_store=store)
+    feed = recorder._paths(session)["raw"]
+    _write_feed(feed, _feed_prefix("FP1"))
+
+    assert not recorder._publish_live_snapshot(session, feed)
+    assert "live/current.json" not in store.objects
 
 
 def test_live_records_reject_invalid_oversized_stale_and_mismatched_data():
