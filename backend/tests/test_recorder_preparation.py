@@ -3,13 +3,17 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
 from racelens.recorder.preparation import PreparationOutcome, SubprocessPreparationRunner
+from racelens.recorder import preparation_job
 from racelens.recorder.preparation_job import parse_session
 from racelens.recorder.schedule import ScheduledSession
+from racelens.recorder.worker import Config, Recorder
 
 
 SESSION = ScheduledSession(
@@ -113,7 +117,11 @@ def test_stop_terminates_process_group_and_reports_preemption(tmp_path, monkeypa
     assert outcome == PreparationOutcome(
         SESSION.session_id, "preempted by scheduled capture"
     )
-    assert killed == [(processes[0].pid, signal.SIGTERM)]
+    assert killed == [
+        (processes[0].pid, signal.SIGTERM),
+        (processes[0].pid, 0),
+        (processes[0].pid, signal.SIGKILL),
+    ]
     assert runner.active_session_id is None
     assert not (tmp_path / "preparation-active.json").exists()
 
@@ -132,6 +140,88 @@ def test_stop_kills_process_group_after_termination_timeout(tmp_path, monkeypatc
         (processes[0].pid, signal.SIGKILL),
     ]
     assert processes[0].wait_calls == [30, 10]
+
+
+def _pid_is_running(pid: int) -> bool:
+    stat = Path(f"/proc/{pid}/stat")
+    if not stat.exists():
+        return False
+    return stat.read_text(encoding="utf-8").split()[2] != "Z"
+
+
+def _wait_for_file(path: Path, timeout: float = 5) -> None:
+    deadline = time.monotonic() + timeout
+    while not path.exists():
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"timed out waiting for {path}")
+        time.sleep(0.01)
+
+
+def _spawn_leader_with_stubborn_child(pid_file: Path, *, leader_exits: bool):
+    child = (
+        "import os,signal,time,pathlib;"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()));"
+        "time.sleep(60)"
+    )
+    leader_tail = "" if leader_exits else ";time.sleep(60)"
+    leader = (
+        "import subprocess,sys,time;"
+        f"subprocess.Popen([sys.executable,'-c',{child!r}])"
+        f"{leader_tail}"
+    )
+    return subprocess.Popen([sys.executable, "-c", leader], start_new_session=True)
+
+
+def _kill_group_for_test(process: subprocess.Popen) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=2)
+
+
+def test_stop_kills_stubborn_descendant_after_leader_exits(tmp_path):
+    pid_file = tmp_path / "child.pid"
+    process = _spawn_leader_with_stubborn_child(pid_file, leader_exits=False)
+    _wait_for_file(pid_file)
+    child_pid = int(pid_file.read_text(encoding="utf-8"))
+    try:
+        SubprocessPreparationRunner._terminate_process(process)
+        deadline = time.monotonic() + 2
+        while _pid_is_running(child_pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not _pid_is_running(child_pid)
+    finally:
+        _kill_group_for_test(process)
+
+
+def test_poll_cleans_descendants_after_unexpected_leader_exit(tmp_path):
+    pid_file = tmp_path / "child.pid"
+    processes = []
+
+    def popen(_argv, **_kwargs):
+        process = _spawn_leader_with_stubborn_child(pid_file, leader_exits=True)
+        processes.append(process)
+        return process
+
+    runner = SubprocessPreparationRunner(tmp_path, popen=popen)
+    assert runner.start(SESSION)
+    _wait_for_file(pid_file)
+    child_pid = int(pid_file.read_text(encoding="utf-8"))
+    processes[0].wait(timeout=5)
+    try:
+        assert runner.poll() == PreparationOutcome(SESSION.session_id, None)
+        deadline = time.monotonic() + 2
+        while _pid_is_running(child_pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not _pid_is_running(child_pid)
+    finally:
+        _kill_group_for_test(processes[0])
 
 
 def test_constructor_removes_stale_marker(tmp_path):
@@ -169,3 +259,53 @@ def test_parse_session_reconstructs_scheduled_session():
         "Q",
         "2026-09-25T14:00:00+02:00",
     ]) == SESSION
+
+
+def test_preparation_recorder_does_not_refresh_coordinator_heartbeat(tmp_path):
+    config = Config(
+        state_dir=tmp_path / "state",
+        raw_dir=tmp_path / "raw",
+        data_dir=tmp_path / "data",
+        interval_seconds=120,
+        capture_poll_seconds=5,
+        raw_retention_days=14,
+        publish_sessions=frozenset({"R"}),
+        transcribe_radio=False,
+        race_core=Path("race-core"),
+    )
+    recorder = Recorder(config, owns_coordinator_heartbeat=False)
+    recorder.heartbeat.write_text("coordinator\n", encoding="utf-8")
+    old_ns = 1_700_000_000_000_000_000
+    os.utime(recorder.heartbeat, ns=(old_ns, old_ns))
+
+    recorder._run([sys.executable, "-c", "pass"])
+
+    assert recorder.heartbeat.stat().st_mtime_ns == old_ns
+
+
+def test_preparation_job_disables_coordinator_heartbeat(monkeypatch):
+    calls = []
+
+    class FakeConfig:
+        @staticmethod
+        def from_env():
+            return "config"
+
+    class FakeRecorder:
+        def __init__(self, config, **kwargs):
+            calls.append((config, kwargs))
+
+        def process(self, session):
+            calls.append(session)
+
+    monkeypatch.setattr("racelens.recorder.worker.Config", FakeConfig)
+    monkeypatch.setattr("racelens.recorder.worker.Recorder", FakeRecorder)
+
+    preparation_job.main([
+        "2026", "15", "Azerbaijan Grand Prix", "Q", "2026-09-25T12:00:00+00:00",
+    ])
+
+    assert calls == [
+        ("config", {"owns_coordinator_heartbeat": False}),
+        SESSION,
+    ]

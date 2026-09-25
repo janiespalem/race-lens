@@ -268,6 +268,35 @@ def test_preparation_start_failure_becomes_retryable(tmp_path, monkeypatch):
     assert stored.retry_phase is Phase.PROCESSING
 
 
+def test_starting_preparation_releases_live_transcription_without_waiting(
+    tmp_path, monkeypatch,
+):
+    now = datetime(2026, 7, 19, 15, tzinfo=UTC)
+    session = replace(SESSION, starts_at=now - timedelta(hours=3))
+    runner = FakePreparationRunner()
+    recorder = Recorder(_config(tmp_path), now=lambda: now, preparation_runner=runner)
+
+    class Transcripts:
+        def __init__(self):
+            self.close_calls = []
+
+        def close(self, *, wait=True):
+            self.close_calls.append(wait)
+
+    transcripts = Transcripts()
+    recorder._transcripts = transcripts
+    recorder.store.transition(session.session_id, Phase.RECORDING, now)
+    recorder.store.transition(session.session_id, Phase.CAPTURED, now)
+    monkeypatch.setattr(
+        "racelens.recorder.worker.load_fastf1_schedule", lambda _year: [session]
+    )
+
+    assert recorder.run_once() == f"processing started: {session.session_id}"
+
+    assert transcripts.close_calls == [False]
+    assert recorder._transcripts is None
+
+
 def test_active_preparation_prevents_second_start(tmp_path, monkeypatch):
     now = datetime(2026, 7, 19, 15, tzinfo=UTC)
     first = replace(SESSION, starts_at=now - timedelta(hours=4))

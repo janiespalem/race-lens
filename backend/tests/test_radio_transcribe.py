@@ -123,6 +123,23 @@ def test_live_worker_close_waits_and_releases_model(monkeypatch) -> None:
     assert cleared == [True]
 
 
+def test_live_worker_close_can_cancel_queue_without_waiting(monkeypatch) -> None:
+    shutdown = []
+    cleared = []
+    worker = rt.TranscriptWorker()
+    monkeypatch.setattr(
+        worker._pool,
+        "shutdown",
+        lambda **kwargs: shutdown.append(kwargs),
+    )
+    monkeypatch.setattr(rt._model, "cache_clear", lambda: cleared.append(True))
+
+    worker.close(wait=False)
+
+    assert shutdown == [{"wait": False, "cancel_futures": True}]
+    assert cleared == [True]
+
+
 def _evaluation_manifest(tmp_path: Path, count: int = 50) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / "private-radio-reference.jsonl"

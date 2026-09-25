@@ -133,6 +133,15 @@ class SubprocessPreparationRunner:
             except ProcessLookupError:
                 pass
             process.wait(timeout=10)
+            return
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
     def poll(self) -> PreparationOutcome | None:
         if self._process is None:
@@ -140,7 +149,7 @@ class SubprocessPreparationRunner:
         status = self._process.poll()
         if status is None:
             return None
-        self._process.wait(timeout=0)
+        self._terminate_process(self._process)
         error = None if status == 0 else f"preparation exited with status {status}"
         return self._finish(error)
 
@@ -149,7 +158,7 @@ class SubprocessPreparationRunner:
             return None
         status = self._process.poll()
         if status is not None:
-            self._process.wait(timeout=0)
+            self._terminate_process(self._process)
             error = None if status == 0 else f"preparation exited with status {status}"
             return self._finish(error)
         self._terminate_process(self._process)
