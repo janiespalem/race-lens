@@ -8,6 +8,7 @@ import pytest
 
 from racelens.object_storage import publish_session
 from racelens.insights.passes import KIND_ON_TRACK, Pass
+from racelens.recorder.preparation import PreparationOutcome
 from racelens.recorder.schedule import ScheduledSession
 from racelens.recorder.worker import Config, Recorder, fixture_stem
 from racelens.recorder.state import Phase
@@ -17,6 +18,43 @@ from tests.test_object_storage import MemoryStore
 SESSION = ScheduledSession(
     2026, 13, "Belgian Grand Prix", "R", datetime(2026, 7, 19, 13, tzinfo=UTC)
 )
+
+
+class FakePreparationRunner:
+    def __init__(self):
+        self.active_session_id = None
+        self.starts = []
+        self.outcome = None
+        self.stop_calls = []
+        self.closed = False
+        self.start_error = None
+
+    def start(self, session):
+        if self.start_error is not None:
+            raise self.start_error
+        if self.active_session_id is not None:
+            return False
+        self.active_session_id = session.session_id
+        self.starts.append(session.session_id)
+        return True
+
+    def poll(self):
+        outcome, self.outcome = self.outcome, None
+        if outcome is not None:
+            self.active_session_id = None
+        return outcome
+
+    def stop(self, reason):
+        if self.active_session_id is None:
+            return None
+        self.stop_calls.append((self.active_session_id, reason))
+        outcome = PreparationOutcome(self.active_session_id, reason)
+        self.active_session_id = None
+        return outcome
+
+    def close(self):
+        self.closed = True
+        self.stop("coordinator stopped")
 
 
 def _config(tmp_path, publish=frozenset({"R"})):
@@ -113,15 +151,215 @@ def test_config_publishes_every_session_type_by_default(tmp_path, monkeypatch):
     )
 
 
+def test_running_preparation_is_preempted_when_capture_becomes_due(tmp_path, monkeypatch):
+    clock = [datetime(2026, 7, 19, 8, tzinfo=UTC)]
+    older = ScheduledSession(
+        2026, 12, "Dutch Grand Prix", "FP1", clock[0] - timedelta(hours=3),
+    )
+    later = ScheduledSession(
+        2026, 13, "Belgian Grand Prix", "Q", clock[0] + timedelta(hours=4),
+    )
+    runner = FakePreparationRunner()
+    recorder = Recorder(
+        _config(tmp_path), now=lambda: clock[0], preparation_runner=runner,
+    )
+    recorder.store.transition(older.session_id, Phase.RECORDING, clock[0])
+    recorder.store.transition(older.session_id, Phase.CAPTURED, clock[0])
+    monkeypatch.setattr(
+        "racelens.recorder.worker.load_fastf1_schedule", lambda _year: [older, later]
+    )
+    captures = []
+    monkeypatch.setattr(recorder, "capture", lambda item: captures.append(item.session_id))
+
+    assert recorder.run_once() == f"processing started: {older.session_id}"
+    assert runner.active_session_id == older.session_id
+
+    clock[0] = later.capture_from
+    assert recorder.run_once() == f"captured: {later.session_id}"
+    assert captures == [later.session_id]
+    assert runner.stop_calls == [
+        (older.session_id, "preempted by scheduled capture"),
+    ]
+    older_state = recorder.store.load().sessions[older.session_id]
+    assert older_state.phase is Phase.FAILED
+    assert older_state.retry_phase is Phase.PROCESSING
+
+
+def test_preparation_success_is_reconciled_without_blocking_due_capture(
+    tmp_path, monkeypatch,
+):
+    clock = [datetime(2026, 7, 19, 8, tzinfo=UTC)]
+    older = ScheduledSession(
+        2026, 12, "Dutch Grand Prix", "FP1", clock[0] - timedelta(hours=3),
+    )
+    later = ScheduledSession(
+        2026, 13, "Belgian Grand Prix", "Q", clock[0] + timedelta(hours=4),
+    )
+    runner = FakePreparationRunner()
+    recorder = Recorder(
+        _config(tmp_path), now=lambda: clock[0], preparation_runner=runner,
+    )
+    recorder.store.transition(older.session_id, Phase.RECORDING, clock[0])
+    recorder.store.transition(older.session_id, Phase.CAPTURED, clock[0])
+    monkeypatch.setattr(
+        "racelens.recorder.worker.load_fastf1_schedule", lambda _year: [older, later]
+    )
+    captures = []
+    monkeypatch.setattr(recorder, "capture", lambda item: captures.append(item.session_id))
+
+    assert recorder.run_once() == f"processing started: {older.session_id}"
+    runner.outcome = PreparationOutcome(older.session_id, None)
+    clock[0] = later.capture_from
+
+    assert recorder.run_once() == f"captured: {later.session_id}"
+    assert captures == [later.session_id]
+    assert runner.stop_calls == []
+    assert recorder.store.load().sessions[older.session_id].phase is Phase.COMPLETE
+
+
+@pytest.mark.parametrize(
+    ("outcome", "phase"),
+    [
+        (PreparationOutcome(SESSION.session_id, None), Phase.COMPLETE),
+        (PreparationOutcome(SESSION.session_id, "archive unavailable"), Phase.FAILED),
+    ],
+)
+def test_preparation_outcome_is_persisted_by_coordinator(
+    tmp_path, monkeypatch, outcome, phase,
+):
+    now = datetime(2026, 7, 19, 15, tzinfo=UTC)
+    session = replace(SESSION, starts_at=now - timedelta(hours=3))
+    runner = FakePreparationRunner()
+    recorder = Recorder(_config(tmp_path), now=lambda: now, preparation_runner=runner)
+    recorder.store.transition(session.session_id, Phase.RECORDING, now)
+    recorder.store.transition(session.session_id, Phase.CAPTURED, now)
+    monkeypatch.setattr(
+        "racelens.recorder.worker.load_fastf1_schedule", lambda _year: [session]
+    )
+
+    assert recorder.run_once() == f"processing started: {session.session_id}"
+    runner.outcome = outcome
+    result = recorder.run_once()
+
+    assert result.startswith("complete:" if phase is Phase.COMPLETE else "processing failed:")
+    stored = recorder.store.load().sessions[session.session_id]
+    assert stored.phase is phase
+    if phase is Phase.FAILED:
+        assert stored.retry_phase is Phase.PROCESSING
+
+
+def test_preparation_start_failure_becomes_retryable(tmp_path, monkeypatch):
+    now = datetime(2026, 7, 19, 15, tzinfo=UTC)
+    session = replace(SESSION, starts_at=now - timedelta(hours=3))
+    runner = FakePreparationRunner()
+    runner.start_error = OSError("process table full")
+    recorder = Recorder(_config(tmp_path), now=lambda: now, preparation_runner=runner)
+    recorder.store.transition(session.session_id, Phase.RECORDING, now)
+    recorder.store.transition(session.session_id, Phase.CAPTURED, now)
+    monkeypatch.setattr(
+        "racelens.recorder.worker.load_fastf1_schedule", lambda _year: [session]
+    )
+
+    assert recorder.run_once() == (
+        f"processing failed: {session.session_id}: process table full"
+    )
+    stored = recorder.store.load().sessions[session.session_id]
+    assert stored.phase is Phase.FAILED
+    assert stored.retry_phase is Phase.PROCESSING
+
+
+def test_active_preparation_prevents_second_start(tmp_path, monkeypatch):
+    now = datetime(2026, 7, 19, 15, tzinfo=UTC)
+    first = replace(SESSION, starts_at=now - timedelta(hours=4))
+    second = ScheduledSession(
+        2026, 12, "Dutch Grand Prix", "FP1", now - timedelta(hours=3),
+    )
+    runner = FakePreparationRunner()
+    recorder = Recorder(_config(tmp_path), now=lambda: now, preparation_runner=runner)
+    for session in (first, second):
+        recorder.store.transition(session.session_id, Phase.RECORDING, now)
+        recorder.store.transition(session.session_id, Phase.CAPTURED, now)
+    monkeypatch.setattr(
+        "racelens.recorder.worker.load_fastf1_schedule", lambda _year: [first, second]
+    )
+
+    assert recorder.run_once().startswith("processing started:")
+    owner = runner.active_session_id
+    assert owner in {first.session_id, second.session_id}
+    assert recorder.run_once() == f"processing: {owner}"
+    assert runner.starts == [owner]
+
+
+def test_restart_relaunches_persisted_processing_once(tmp_path, monkeypatch):
+    now = datetime(2026, 7, 19, 15, tzinfo=UTC)
+    session = replace(SESSION, starts_at=now - timedelta(hours=3))
+    first = Recorder(_config(tmp_path), now=lambda: now)
+    first.store.transition(session.session_id, Phase.RECORDING, now)
+    first.store.transition(session.session_id, Phase.CAPTURED, now)
+    first.store.transition(session.session_id, Phase.PROCESSING, now)
+    runner = FakePreparationRunner()
+    restarted = Recorder(_config(tmp_path), now=lambda: now, preparation_runner=runner)
+    monkeypatch.setattr(
+        "racelens.recorder.worker.load_fastf1_schedule", lambda _year: [session]
+    )
+
+    assert restarted.run_once() == f"processing started: {session.session_id}"
+    assert restarted.run_once() == f"processing: {session.session_id}"
+    assert runner.starts == [session.session_id]
+
+
+def test_preparation_failure_does_not_replace_another_session_live_pointer(
+    tmp_path, monkeypatch,
+):
+    now = datetime(2026, 7, 19, 15, tzinfo=UTC)
+    session = replace(SESSION, starts_at=now - timedelta(hours=3))
+    runner = FakePreparationRunner()
+    store = MemoryStore()
+    pointer = {"canonical_session_id": "2026-99-r", "status": "live"}
+    store.objects["live/current.json"] = pointer.copy()
+    recorder = Recorder(
+        _config(tmp_path), now=lambda: now, object_store=store,
+        preparation_runner=runner,
+    )
+    recorder.store.transition(session.session_id, Phase.RECORDING, now)
+    recorder.store.transition(session.session_id, Phase.CAPTURED, now)
+    monkeypatch.setattr(
+        "racelens.recorder.worker.load_fastf1_schedule", lambda _year: [session]
+    )
+
+    recorder.run_once()
+    runner.outcome = PreparationOutcome(session.session_id, "archive unavailable")
+    recorder.run_once()
+
+    assert store.objects["live/current.json"] == pointer
+
+
+def test_run_forever_closes_preparation_runner_when_interrupted(tmp_path, monkeypatch):
+    runner = FakePreparationRunner()
+    recorder = Recorder(
+        _config(tmp_path),
+        preparation_runner=runner,
+        sleep=lambda _seconds: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    monkeypatch.setattr(recorder, "run_once", lambda: "idle")
+
+    with pytest.raises(KeyboardInterrupt):
+        recorder.run_forever()
+
+    assert runner.closed
+
+
 def test_processing_retry_keeps_live_finishing_and_never_recaptures(tmp_path, monkeypatch):
     clock = [datetime(2026, 7, 19, 12, 55, tzinfo=UTC)]
     session = ScheduledSession(2026, 13, "Belgian Grand Prix", "R", clock[0])
-    recorder = Recorder(_config(tmp_path), now=lambda: clock[0])
+    runner = FakePreparationRunner()
+    recorder = Recorder(
+        _config(tmp_path), now=lambda: clock[0], preparation_runner=runner,
+    )
     monkeypatch.setattr(
         "racelens.recorder.worker.load_fastf1_schedule", lambda year: [session]
     )
     captures = []
-    processes = []
     live_statuses = []
     monkeypatch.setattr(recorder, "capture", lambda item: captures.append(item.session_id))
     monkeypatch.setattr(
@@ -130,23 +368,20 @@ def test_processing_retry_keeps_live_finishing_and_never_recaptures(tmp_path, mo
         lambda _session, status, **_kwargs: live_statuses.append(status),
     )
 
-    def process(item):
-        processes.append(item.session_id)
-        if len(processes) == 1:
-            raise RuntimeError("archive not ready")
-
-    monkeypatch.setattr(recorder, "process", process)
-
     assert recorder.run_once().startswith("captured:")
+    assert recorder.run_once().startswith("processing started:")
+    runner.outcome = PreparationOutcome(session.session_id, "archive not ready")
     assert recorder.run_once().startswith("processing failed:")
     failed = recorder.store.load().sessions[session.session_id]
     assert failed.phase is Phase.FAILED
     assert failed.retry_phase is Phase.PROCESSING
 
     clock[0] += timedelta(minutes=16)
+    assert recorder.run_once().startswith("processing started:")
+    runner.outcome = PreparationOutcome(session.session_id, None)
     assert recorder.run_once().startswith("complete:")
     assert captures == [session.session_id]
-    assert processes == [session.session_id, session.session_id]
+    assert runner.starts == [session.session_id, session.session_id]
     assert live_statuses == []
 
 
@@ -209,7 +444,8 @@ def test_due_processing_retry_precedes_approaching_capture(tmp_path, monkeypatch
     later = ScheduledSession(
         2026, 13, "Belgian Grand Prix", "FP1", now + timedelta(hours=1, minutes=10),
     )
-    recorder = Recorder(_config(tmp_path), now=lambda: now)
+    runner = FakePreparationRunner()
+    recorder = Recorder(_config(tmp_path), now=lambda: now, preparation_runner=runner)
     recorder.store.transition(retry_session.session_id, Phase.RECORDING, now)
     recorder.store.transition(retry_session.session_id, Phase.CAPTURED, now)
     recorder.store.transition(retry_session.session_id, Phase.PROCESSING, now)
@@ -224,10 +460,9 @@ def test_due_processing_retry_precedes_approaching_capture(tmp_path, monkeypatch
         "racelens.recorder.worker.load_fastf1_schedule",
         lambda year: [retry_session, later],
     )
-    monkeypatch.setattr(recorder, "process", lambda _session: None)
-
-    assert recorder.run_once() == f"complete: {retry_session.session_id}"
-    assert recorder.store.load().sessions[retry_session.session_id].phase is Phase.COMPLETE
+    assert recorder.run_once() == f"processing started: {retry_session.session_id}"
+    assert runner.starts == [retry_session.session_id]
+    assert recorder.store.load().sessions[retry_session.session_id].phase is Phase.PROCESSING
 
 
 def test_failed_capture_retry_precedes_older_captured_archive(tmp_path, monkeypatch):
@@ -266,7 +501,8 @@ def test_failed_capture_retry_precedes_older_captured_archive(tmp_path, monkeypa
 
 def test_retention_keeps_input_for_captured_work(tmp_path, monkeypatch):
     now = datetime(2026, 7, 19, 15, tzinfo=UTC)
-    recorder = Recorder(_config(tmp_path), now=lambda: now)
+    runner = FakePreparationRunner()
+    recorder = Recorder(_config(tmp_path), now=lambda: now, preparation_runner=runner)
     recorder.store.transition(SESSION.session_id, Phase.RECORDING, now)
     recorder.store.transition(SESSION.session_id, Phase.CAPTURED, now)
     protected = recorder._paths(SESSION)["clean"]
@@ -277,9 +513,7 @@ def test_retention_keeps_input_for_captured_work(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "racelens.recorder.worker.load_fastf1_schedule", lambda year: [SESSION]
     )
-    monkeypatch.setattr(recorder, "process", lambda session: None)
-
-    assert recorder.run_once().startswith("complete:")
+    assert recorder.run_once().startswith("processing started:")
     assert protected.exists()
     assert not orphan.exists()
 
@@ -292,15 +526,15 @@ def test_restart_resumes_persisted_processing_phase(tmp_path, monkeypatch):
     first.store.transition(session.session_id, Phase.CAPTURED, now)
     first.store.transition(session.session_id, Phase.PROCESSING, now)
 
-    restarted = Recorder(_config(tmp_path), now=lambda: now)
+    runner = FakePreparationRunner()
+    restarted = Recorder(
+        _config(tmp_path), now=lambda: now, preparation_runner=runner,
+    )
     monkeypatch.setattr(
         "racelens.recorder.worker.load_fastf1_schedule", lambda year: [session]
     )
-    processed = []
-    monkeypatch.setattr(restarted, "process", lambda item: processed.append(item.session_id))
-
-    assert restarted.run_once().startswith("complete:")
-    assert processed == [session.session_id]
+    assert restarted.run_once().startswith("processing started:")
+    assert runner.starts == [session.session_id]
 
 
 def test_restart_finalizes_recording_after_schedule_deadline(tmp_path, monkeypatch):
@@ -481,7 +715,8 @@ def test_expired_capture_without_matching_raw_never_starts_signalr(tmp_path, mon
 def test_expired_missing_capture_does_not_block_other_archive_between_retries(tmp_path, monkeypatch):
     now = SESSION.capture_until + timedelta(minutes=1)
     older = replace(SESSION, round_number=12, starts_at=SESSION.starts_at - timedelta(days=7))
-    recorder = Recorder(_config(tmp_path), now=lambda: now)
+    runner = FakePreparationRunner()
+    recorder = Recorder(_config(tmp_path), now=lambda: now, preparation_runner=runner)
     recorder.store.transition(older.session_id, Phase.RECORDING, older.starts_at)
     recorder.store.transition(older.session_id, Phase.CAPTURED, older.capture_until)
     recorder.store.transition(SESSION.session_id, Phase.RECORDING, SESSION.starts_at)
@@ -492,11 +727,8 @@ def test_expired_missing_capture_does_not_block_other_archive_between_retries(tm
     monkeypatch.setattr(
         "racelens.recorder.worker.load_fastf1_schedule", lambda _year: [older, SESSION],
     )
-    processed = []
-    monkeypatch.setattr(recorder, "process", lambda session: processed.append(session.session_id))
-
     assert recorder.run_once().startswith(f"capture failed: {SESSION.session_id}:")
     assert recorder.store.load().sessions[SESSION.session_id].retry_at > now
-    assert recorder.run_once() == f"complete: {older.session_id}"
-    assert processed == [older.session_id]
-    assert recorder.store.load().sessions[older.session_id].phase is Phase.COMPLETE
+    assert recorder.run_once() == f"processing started: {older.session_id}"
+    assert runner.starts == [older.session_id]
+    assert recorder.store.load().sessions[older.session_id].phase is Phase.PROCESSING

@@ -38,6 +38,11 @@ from racelens.object_storage import (
 )
 from racelens.recorder.feed import inspect_feed, isolate_session
 from racelens.recorder.postprocess import merge_captured_radio, validate_archive, validate_fixture
+from racelens.recorder.preparation import (
+    PreparationOutcome,
+    PreparationRunner,
+    SubprocessPreparationRunner,
+)
 from racelens.recorder.schedule import ScheduledSession, load_fastf1_schedule, select_due_session
 from racelens.recorder.state import Phase, StateStore
 from racelens.replay.engine import ReplayEngine
@@ -133,6 +138,7 @@ class Recorder:
         now: Callable[[], datetime] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         object_store: object | None = None,
+        preparation_runner: PreparationRunner | None = None,
     ) -> None:
         self.config = config
         self.now = now or (lambda: datetime.now(UTC))
@@ -158,12 +164,46 @@ class Recorder:
         self._live_pass_confirmed: dict[str, set[Pass]] = {}
         self._transcripts = None
         self._award_sync_at: datetime | None = None
+        self._preparation_runner = preparation_runner
         for path in (config.state_dir, config.raw_dir, config.data_dir):
             path.mkdir(parents=True, exist_ok=True)
         self.remote_processing.unlink(missing_ok=True)
 
     def _beat(self) -> None:
         self.heartbeat.touch()
+
+    def _preparation(self) -> PreparationRunner:
+        if self._preparation_runner is None:
+            self._preparation_runner = SubprocessPreparationRunner(self.config.state_dir)
+        return self._preparation_runner
+
+    def _apply_preparation_outcome(self, outcome: PreparationOutcome) -> str:
+        current = self.store.load().sessions.get(outcome.session_id)
+        if current is None or current.phase is not Phase.PROCESSING:
+            raise RuntimeError("preparation outcome has no processing owner")
+        now = self.now()
+        if outcome.error is None:
+            self.store.transition(outcome.session_id, Phase.COMPLETE, now)
+            return f"complete: {outcome.session_id}"
+        self.store.transition(
+            outcome.session_id,
+            Phase.FAILED,
+            now,
+            error=outcome.error,
+            retry_at=now + ARCHIVE_RETRY,
+        )
+        return f"processing failed: {outcome.session_id}: {outcome.error}"
+
+    def _reconcile_preparation(self) -> str | None:
+        outcome = self._preparation().poll()
+        return self._apply_preparation_outcome(outcome) if outcome is not None else None
+
+    def _preempt_preparation(self) -> str | None:
+        runner = self._preparation()
+        outcome = runner.poll()
+        if outcome is None and runner.active_session_id is not None:
+            outcome = runner.stop("preempted by scheduled capture")
+        return self._apply_preparation_outcome(outcome) if outcome is not None else None
 
     @staticmethod
     def _is_live_session(session: ScheduledSession) -> bool:
@@ -803,6 +843,7 @@ class Recorder:
         return f"requested archive complete: {session_id}"
 
     def run_once(self) -> str:
+        preparation_result = self._reconcile_preparation()
         now = self.now()
         state = self.store.load()
         protected = tuple(
@@ -877,6 +918,7 @@ class Recorder:
                 raise RuntimeError(f"schedule no longer contains {session_id}")
             if recovering:
                 self.store.transition(session_id, Phase.RECORDING, now)
+            self._preempt_preparation()
             try:
                 self.capture(session)
             except Exception as exc:
@@ -898,6 +940,7 @@ class Recorder:
         # A due capture takes priority over older captured archive work.
         session = select_due_session(sessions, now, unavailable)
         if session is not None:
+            self._preempt_preparation()
             self.store.transition(session.session_id, Phase.RECORDING, now)
             try:
                 self.capture(session)
@@ -909,6 +952,9 @@ class Recorder:
                 return f"capture failed: {session.session_id}: {exc}"
             self.store.transition(session.session_id, Phase.CAPTURED, self.now())
             return f"captured: {session.session_id}"
+
+        if preparation_result is not None:
+            return preparation_result
 
         capture_deadlines = [
             (
@@ -950,6 +996,10 @@ class Recorder:
                 f"{next_capture[0].isoformat()} (approaching)"
             )
 
+        runner = self._preparation()
+        if runner.active_session_id is not None:
+            return f"processing: {runner.active_session_id}"
+
         # A due processing retry must not starve behind successive capture guards.
         # Other archive work still yields while a capture is approaching.
         for session_id, item in state.sessions.items():
@@ -965,15 +1015,16 @@ class Recorder:
                 raise RuntimeError(f"schedule no longer contains {session_id}")
             self.store.transition(session_id, Phase.PROCESSING, now)
             try:
-                self.process(session)
+                started = runner.start(session)
             except Exception as exc:
                 retry = self.now() + ARCHIVE_RETRY
                 self.store.transition(
                     session_id, Phase.FAILED, self.now(), error=str(exc), retry_at=retry,
                 )
                 return f"processing failed: {session_id}: {exc}"
-            self.store.transition(session_id, Phase.COMPLETE, self.now())
-            return f"complete: {session_id}"
+            if not started:
+                return "processing busy"
+            return f"processing started: {session_id}"
 
         remote = self._run_remote_once()
         if remote == "idle":
@@ -986,15 +1037,23 @@ class Recorder:
         return remote
 
     def run_forever(self) -> None:
-        while True:
-            self._beat()
-            try:
-                result = self.run_once()
-                print(f"{self.now().isoformat()} {result}", flush=True)
-            except Exception as exc:
-                print(f"{self.now().isoformat()} worker error: {exc}", file=sys.stderr, flush=True)
-            self._beat()
-            self.sleep(self.config.interval_seconds)
+        try:
+            while True:
+                self._beat()
+                try:
+                    result = self.run_once()
+                    print(f"{self.now().isoformat()} {result}", flush=True)
+                except Exception as exc:
+                    print(
+                        f"{self.now().isoformat()} worker error: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                self._beat()
+                self.sleep(self.config.interval_seconds)
+        finally:
+            if self._preparation_runner is not None:
+                self._preparation_runner.close()
 
 
 def main() -> None:
