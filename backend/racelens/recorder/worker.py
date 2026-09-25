@@ -51,7 +51,7 @@ PROCESS_TIMEOUT = 60 * 60
 SCHEDULE_REFRESH = timedelta(hours=6)
 REMOTE_CAPTURE_GUARD = timedelta(hours=2)
 SESSION_LABEL = {"R": "race", "Q": "qualifying", "SQ": "sprint_qualifying"}
-LIVE_SESSION_KINDS = frozenset({"R", "Sprint"})
+LIVE_SESSION_KINDS = frozenset({"R", "Sprint", "Q", "SQ"})
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +164,10 @@ class Recorder:
 
     def _beat(self) -> None:
         self.heartbeat.touch()
+
+    @staticmethod
+    def _is_live_session(session: ScheduledSession) -> bool:
+        return session.kind in LIVE_SESSION_KINDS
 
     def _load_schedule_cache(self) -> list[ScheduledSession]:
         if self.schedule_cache.stat().st_size > 1024 * 1024:
@@ -296,7 +300,7 @@ class Recorder:
         return [item for item in candidates if item in confirmed]
 
     def _publish_live_snapshot(self, session: ScheduledSession, raw: Path) -> bool:
-        if self.object_store is None or session.kind not in LIVE_SESSION_KINDS:
+        if self.object_store is None or not self._is_live_session(session):
             return False
         inspection = inspect_feed(raw, session)
         if not inspection.matched or inspection.segment_ended:
@@ -465,7 +469,7 @@ class Recorder:
         *,
         failure: str | None = None,
     ) -> None:
-        if self.object_store is None or session.kind not in LIVE_SESSION_KINDS:
+        if self.object_store is None or not self._is_live_session(session):
             return
         write_live_status(
             self.object_store,
@@ -484,7 +488,7 @@ class Recorder:
         publish is best-effort, so finishing must not depend on it having
         succeeded.
         """
-        if self.object_store is None or session.kind not in LIVE_SESSION_KINDS:
+        if self.object_store is None or not self._is_live_session(session):
             return
         try:
             current = self.object_store.get_json(
@@ -538,7 +542,7 @@ class Recorder:
                 inspection = inspect_feed(raw, session, inspection)
                 if (
                     inspection.matched
-                    and session.kind in LIVE_SESSION_KINDS
+                    and self._is_live_session(session)
                     and self.object_store is not None
                     and (
                         last_live_snapshot_at is None
