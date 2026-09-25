@@ -84,8 +84,9 @@ class TranscriptWorker:
         if text:
             self._cache[url] = text
 
-    def close(self) -> None:
-        self._pool.shutdown(wait=True)
+    def close(self, *, wait: bool = True) -> None:
+        self._pool.shutdown(wait=wait, cancel_futures=not wait)
+        self._cache.clear()
         _model.cache_clear()
         gc.collect()
 

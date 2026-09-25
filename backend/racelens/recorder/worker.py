@@ -139,6 +139,7 @@ class Recorder:
         sleep: Callable[[float], None] = time.sleep,
         object_store: object | None = None,
         preparation_runner: PreparationRunner | None = None,
+        owns_coordinator_heartbeat: bool = True,
     ) -> None:
         self.config = config
         self.now = now or (lambda: datetime.now(UTC))
@@ -165,12 +166,20 @@ class Recorder:
         self._transcripts = None
         self._award_sync_at: datetime | None = None
         self._preparation_runner = preparation_runner
+        self._owns_coordinator_heartbeat = owns_coordinator_heartbeat
         for path in (config.state_dir, config.raw_dir, config.data_dir):
             path.mkdir(parents=True, exist_ok=True)
         self.remote_processing.unlink(missing_ok=True)
 
     def _beat(self) -> None:
-        self.heartbeat.touch()
+        if self._owns_coordinator_heartbeat:
+            self.heartbeat.touch()
+
+    def _release_live_transcripts(self, *, wait: bool) -> None:
+        if self._transcripts is None:
+            return
+        self._transcripts.close(wait=wait)
+        self._transcripts = None
 
     def _preparation(self) -> PreparationRunner:
         if self._preparation_runner is None:
@@ -779,9 +788,7 @@ class Recorder:
             print(f"official DOTD sync deferred: {type(exc).__name__}", file=sys.stderr)
 
     def process(self, session: ScheduledSession) -> None:
-        if self._transcripts is not None:
-            self._transcripts.close()
-            self._transcripts = None
+        self._release_live_transcripts(wait=True)
         paths = self._paths(session)
         clean = paths["clean"]
         if not clean.is_file():
@@ -1015,6 +1022,7 @@ class Recorder:
                 raise RuntimeError(f"schedule no longer contains {session_id}")
             self.store.transition(session_id, Phase.PROCESSING, now)
             try:
+                self._release_live_transcripts(wait=False)
                 started = runner.start(session)
             except Exception as exc:
                 retry = self.now() + ARCHIVE_RETRY
@@ -1052,6 +1060,7 @@ class Recorder:
                 self._beat()
                 self.sleep(self.config.interval_seconds)
         finally:
+            self._release_live_transcripts(wait=False)
             if self._preparation_runner is not None:
                 self._preparation_runner.close()
 

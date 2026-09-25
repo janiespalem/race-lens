@@ -22,7 +22,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     from racelens.recorder.worker import Config, Recorder
 
     session = parse_session(sys.argv[1:] if argv is None else argv)
-    Recorder(Config.from_env()).process(session)
+    Recorder(Config.from_env(), owns_coordinator_heartbeat=False).process(session)
 
 
 if __name__ == "__main__":
