@@ -137,6 +137,11 @@ export type RaceState = {
   at_ms: number
   lap: number
   session_status: string
+  session_phase?: 'unknown' | 'formation' | 'running' | 'finished'
+  control_mode?: 'green' | 'safety_car' | 'vsc' | 'red_flag'
+  control_since_ms?: number
+  sector_flags?: Record<string, 'yellow' | 'double_yellow'>
+  finish_condition?: FinishCondition | null
   /** Live-only badge text, e.g. "SILVERSTONE · RACE" (null in replay / before SessionInfo arrives). */
   session_name?: string | null
   status_since_ms: number
@@ -163,6 +168,12 @@ export type RaceState = {
   commentary?: CommentaryItem[]
   /** Live-only tyre strategy embedded in each remote snapshot. */
   stints?: StintsResponse | null
+}
+
+export type FinishCondition = {
+  at_ms: number
+  control_mode: 'green' | 'safety_car' | 'vsc' | 'red_flag'
+  sector_flags: Record<string, 'yellow' | 'double_yellow'>
 }
 
 export type InsightsResponse = {

@@ -8,6 +8,7 @@ import { buildPathD, startFinishLine } from '../../lib/trackGeometry'
 import { hasFinishedRace, sectorBoundaryMarkers } from '../../lib/trackInterpolation'
 import { isRetryableLiveTrackError, LIVE_TRACK_RETRY_MS } from '../../lib/liveTrack'
 import { teamColor } from './teamColors'
+import { localYellowSummary } from '../../lib/raceControl'
 import { useTrackAnimation } from './useTrackAnimation'
 import type { Lang } from './replayTypes'
 
@@ -21,6 +22,8 @@ type Props = {
   classification: string[]
   totalLaps?: number | null
   sessionStatus?: string
+  controlMode?: string
+  sectorFlags?: Record<string, 'yellow' | 'double_yellow'>
   /** Session time (ms) when current neutralisation started — for elapsed timer in badge. */
   neutralizationStartMs?: number | null
   selectedIds?: string[]
@@ -44,11 +47,12 @@ const PIT_BOX_HEIGHT = 60
 const PIT_BOX_CAR_Y = PIT_BOX_Y_TOP + 38
 const PIT_CAR_SPACING = 26
 
-function statusWatermark(status: string, lang: Lang): { text: string; color: string } | null {
+function statusWatermark(status: string, lang: Lang, sectorFlags?: Record<string, 'yellow' | 'double_yellow'>): { text: string; color: string } | null {
   if (status === 'red_flag') return { text: lang === 'ru' ? 'КРАСНЫЙ ФЛАГ' : 'RED FLAG', color: '#cc0000' }
   if (status === 'safety_car') return { text: lang === 'ru' ? 'SC' : 'SAFETY CAR', color: '#f2a900' }
   if (status === 'vsc') return { text: lang === 'ru' ? 'VSC' : 'VIRTUAL SC', color: '#f2a900' }
-  return null
+  const local = localYellowSummary(sectorFlags)
+  return local ? { text: local, color: '#f2a900' } : null
 }
 
 function trackStrokeColor(status: string): string {
@@ -73,7 +77,7 @@ function fmtElapsed(ms: number): string {
 }
 
 export const TrackMap = React.memo(function TrackMap({
-  lang = 'en', sessionId, atMs, playing, playbackSpeed, drivers, classification, totalLaps, sessionStatus, neutralizationStartMs,
+  lang = 'en', sessionId, atMs, playing, playbackSpeed, drivers, classification, totalLaps, sessionStatus, controlMode, sectorFlags, neutralizationStartMs,
   selectedIds = [], positionsData, battles = [], recentPasses = [], live = false,
 }: Props) {
   const [trackData, setTrackData] = useState<TrackData | null>(null)
@@ -175,8 +179,8 @@ export const TrackMap = React.memo(function TrackMap({
     }
   }, [live, sessionId])
 
-  const status = sessionStatus ?? ''
-  const watermark = statusWatermark(status, lang)
+  const status = controlMode ?? sessionStatus ?? ''
+  const watermark = statusWatermark(status, lang, sectorFlags)
   const trackStroke = trackStrokeColor(status)
   const trackShadowFilter = trackShadow(status)
   const elapsedTimer = watermark && neutralizationStartMs != null
@@ -344,7 +348,7 @@ export const TrackMap = React.memo(function TrackMap({
               textAnchor="middle"
               dominantBaseline="middle"
               fill="#000"
-              fontSize={elapsedTimer ? 20 : 24}
+              fontSize={elapsedTimer ? 20 : (sectorFlags && Object.keys(sectorFlags).length ? 15 : 24)}
               fontStyle="italic"
               fontWeight={900}
               fontFamily="'Barlow Condensed', sans-serif"
