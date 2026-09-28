@@ -17,6 +17,9 @@ from racelens.object_storage import (
     validate_manifest,
 )
 from racelens.preparations import QueueFullError
+from racelens.events.models import event
+from racelens.replay.engine import ReplayEngine
+from racelens.object_storage import LiveRecordError, _validate_race_state
 
 
 class MemoryStore:
@@ -70,6 +73,19 @@ class MemoryStore:
             raise ManifestError("checksum")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(data)
+
+
+def test_live_snapshot_accepts_old_and_new_race_control_contract():
+    state = ReplayEngine([event("race", "SessionStarted", 0)]).state_at(10)
+    state.update(frame_source="live", viewbox=None)
+    _validate_race_state(state, "race")
+    old = {key: value for key, value in state.items() if key not in {
+        "session_phase", "control_mode", "control_since_ms", "sector_flags", "finish_condition",
+    }}
+    _validate_race_state(old, "race")
+    invalid = {**state, "sector_flags": {"14": "green"}}
+    with pytest.raises(LiveRecordError):
+        _validate_race_state(invalid, "race")
 
 
 def _archive(tmp_path):

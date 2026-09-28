@@ -463,7 +463,10 @@ _RACE_STATE_FIELDS = {
     "status_since_ms", "total_laps", "classification", "drivers",
     "data_quality", "frame_source", "viewbox",
 }
-_RACE_STATE_OPTIONAL_FIELDS = {"restart_at_ms", "weather", "weather_observed_at_ms"}
+_RACE_STATE_OPTIONAL_FIELDS = {
+    "restart_at_ms", "weather", "weather_observed_at_ms", "session_phase",
+    "control_mode", "control_since_ms", "sector_flags", "finish_condition",
+}
 _WEATHER_FIELDS = set(WEATHER_BOUNDS) | {"rainfall"}
 _DRIVER_FIELDS = {
     "position", "rank", "grid_position", "laps_completed", "last_lap_ms",
@@ -628,6 +631,29 @@ def _validate_race_state(value: object, replay_session_id: str) -> None:
         raise LiveRecordError("live snapshot race state is invalid")
     if value["session_id"] != replay_session_id:
         raise LiveRecordError("live snapshot inner identity differs")
+    modes = {"green", "safety_car", "vsc", "red_flag"}
+    def valid_flags(flags: object) -> bool:
+        return isinstance(flags, dict) and len(flags) <= 100 and all(
+            isinstance(sector, str) and re.fullmatch(r"[1-9][0-9]*", sector)
+            and flag in {"yellow", "double_yellow"}
+            for sector, flag in flags.items()
+        )
+    finish = value.get("finish_condition")
+    if (
+        ("session_phase" in value and not _choice(value["session_phase"],
+            {"unknown", "formation", "running", "finished"}))
+        or ("control_mode" in value and not _choice(value["control_mode"], modes))
+        or ("control_since_ms" in value and not _integer(value["control_since_ms"]))
+        or ("sector_flags" in value and not valid_flags(value["sector_flags"]))
+        or (finish is not None and (
+            not isinstance(finish, dict)
+            or set(finish) != {"at_ms", "control_mode", "sector_flags"}
+            or not _integer(finish["at_ms"])
+            or not _choice(finish["control_mode"], modes)
+            or not valid_flags(finish["sector_flags"])
+        ))
+    ):
+        raise LiveRecordError("live snapshot race control is invalid")
     weather = value.get("weather")
     if (
         not _integer(value["at_ms"])

@@ -7,7 +7,7 @@ from racelens.recorder.postprocess import (
     ArchiveValidationError,
     PostprocessError,
     build_command_plan,
-    merge_captured_radio,
+    merge_captured_live_data,
     validate_archive,
 )
 
@@ -41,6 +41,56 @@ def _archive(tmp_path, *, progress=True):
     return fixture, track, positions
 
 
+def test_merge_pairs_repeated_flags_by_source_order_and_keeps_gaps(tmp_path):
+    canonical = tmp_path / "canonical.jsonl"
+    captured = tmp_path / "captured.jsonl"
+    text = "YELLOW IN TRACK SECTOR 14"
+    _write(canonical, [
+        event("canonical", "SessionStarted", 0),
+        event("canonical", "RaceControlMessage", 100, category="Flag", message=text),
+        event("canonical", "RaceControlMessage", 300, category="Flag", message=text),
+        event("canonical", "RaceControlMessage", 500, category="Flag", message="RED FLAG"),
+    ])
+    _write(captured, [
+        event("live", "RaceControlMessage", 101, source="f1live", category="Flag", message=text, flag="YELLOW", scope="Sector", sector=14),
+        event("live", "RaceControlMessage", 301, source="f1live", category="Flag", message=text, flag="YELLOW", scope="Sector", sector=14),
+        event("live", "RaceControlMessage", 401, source="f1live", category="Flag", message=text, flag="YELLOW", scope="Sector", sector=14),
+    ])
+    report = merge_captured_live_data(canonical, captured)
+    merged = load_jsonl(canonical.read_text(encoding="utf-8"))
+    flags = [item for item in merged if item.payload.get("category") == "Flag"]
+    assert [(item.session_time_ms, item.source) for item in flags] == [
+        (101, "f1live"), (301, "f1live"), (401, "f1live"), (500, "fixture"),
+    ]
+    assert all(item.session_id == "canonical" for item in flags)
+    assert all(item.event_id == event(item.session_id, item.type, item.session_time_ms,
+                                       item.driver_id, **item.payload).event_id for item in flags)
+    assert (report.race_control_added, report.race_control_replaced, report.race_control_retained) == (1, 2, 1)
+
+
+def test_merge_rejects_malformed_structured_flag_before_write(tmp_path):
+    canonical = tmp_path / "canonical.jsonl"
+    captured = tmp_path / "captured.jsonl"
+    _write(canonical, [event("canonical", "SessionStarted", 0)])
+    original = canonical.read_bytes()
+    _write(captured, [event("live", "RaceControlMessage", 10, source="f1live",
+                            category="Flag", message="YELLOW IN TRACK SECTOR 14",
+                            flag="YELLOW", scope="Sector", sector="bad")])
+    with pytest.raises(PostprocessError):
+        merge_captured_live_data(canonical, captured)
+    assert canonical.read_bytes() == original
+
+
+def test_merge_reports_retained_flags_when_capture_has_no_usable_data(tmp_path):
+    canonical = tmp_path / "canonical.jsonl"
+    captured = tmp_path / "captured.jsonl"
+    _write(canonical, [event("canonical", "RaceControlMessage", 10,
+                            category="Flag", message="RED FLAG")])
+    captured.write_text("", encoding="utf-8")
+    report = merge_captured_live_data(canonical, captured)
+    assert (report.race_control_added, report.race_control_replaced, report.race_control_retained) == (0, 0, 1)
+
+
 def test_merge_adds_radio_and_preserves_canonical_non_radio(tmp_path):
     canonical = tmp_path / "canonical.jsonl"
     captured = tmp_path / "captured.jsonl"
@@ -55,11 +105,12 @@ def test_merge_adds_radio_and_preserves_canonical_non_radio(tmp_path):
         audio_url="https://live/TeamRadio/ham.mp3", transcript="Box, box.",
     )])
 
-    report = merge_captured_radio(canonical, captured)
+    report = merge_captured_live_data(canonical, captured)
     merged = load_jsonl(canonical.read_text(encoding="utf-8"))
     radio = [item for item in merged if item.payload.get("category") == "Radio"]
 
     assert report.radio_added == 1
+    assert (report.race_control_added, report.race_control_replaced, report.race_control_retained) == (0, 0, 1)
     assert len(radio) == 1
     assert radio[0].session_id == "canonical"
     assert radio[0].payload["transcript"] == "Box, box."
@@ -81,7 +132,7 @@ def test_merge_deduplicates_same_radio_and_keeps_richer_payload(tmp_path):
         ),
     ])
 
-    report = merge_captured_radio(canonical, captured)
+    report = merge_captured_live_data(canonical, captured)
     radios = [item for item in load_jsonl(canonical.read_text()) if item.payload.get("category") == "Radio"]
 
     assert len(radios) == 1
@@ -102,7 +153,7 @@ def test_merge_infers_radio_lap_from_canonical_timeline(tmp_path):
         category="Radio", message="RADIO: HAM", audio_path="TeamRadio/ham.mp3",
     )])
 
-    merge_captured_radio(canonical, captured)
+    merge_captured_live_data(canonical, captured)
     radio = next(
         item for item in load_jsonl(canonical.read_text())
         if item.payload.get("category") == "Radio"
@@ -118,7 +169,7 @@ def test_malformed_capture_does_not_replace_canonical(tmp_path):
     captured.write_text("{not-json}\n", encoding="utf-8")
 
     with pytest.raises(PostprocessError):
-        merge_captured_radio(canonical, captured)
+        merge_captured_live_data(canonical, captured)
 
     assert canonical.read_bytes() == before
 
@@ -130,7 +181,7 @@ def test_absent_radio_leaves_canonical_untouched(tmp_path):
     _write(captured, [event("live", "PositionChanged", 1000, "HAM", position=1)])
     before = canonical.read_bytes()
 
-    report = merge_captured_radio(canonical, captured)
+    report = merge_captured_live_data(canonical, captured)
 
     assert not report.written
     assert report.radio_added == 0
@@ -153,7 +204,7 @@ def test_merge_preserves_only_valid_source_backed_weather(tmp_path):
         event("live", "WeatherUpdated", 3_000, source="fixture", air_temp_c=19.0),
     ])
 
-    merge_captured_radio(canonical, captured)
+    merge_captured_live_data(canonical, captured)
     merged = load_jsonl(canonical.read_text(encoding="utf-8"))
     weather = [item for item in merged if item.type == "WeatherUpdated"]
 
@@ -191,7 +242,7 @@ def test_merge_preserves_only_valid_source_backed_driver_status(tmp_path):
         ),
     ])
 
-    merge_captured_radio(canonical, captured)
+    merge_captured_live_data(canonical, captured)
     merged = load_jsonl(canonical.read_text(encoding="utf-8"))
     statuses = [
         item for item in merged

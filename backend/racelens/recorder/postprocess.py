@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from racelens.events.models import WEATHER_BOUNDS, Event, dump_jsonl, load_jsonl, make_event_id
+from racelens.race_control import classify_race_control
 
 
 class PostprocessError(RuntimeError):
@@ -49,12 +50,17 @@ class MergeReport:
     radio_deduplicated: int
     output_path: Path
     written: bool
+    race_control_added: int = 0
+    race_control_replaced: int = 0
+    race_control_retained: int = 0
 
     @property
     def summary(self) -> str:
         return (
             f"canonical={self.canonical_events} captured={self.captured_events} "
-            f"radio=+{self.radio_added} deduped={self.radio_deduplicated}"
+            f"radio=+{self.radio_added} deduped={self.radio_deduplicated} "
+            f"race_control=+{self.race_control_added} replaced={self.race_control_replaced} "
+            f"retained={self.race_control_retained}"
         )
 
 
@@ -212,16 +218,73 @@ def _merged_radio(session_id: str, rows: list[tuple[bool, Event]]) -> Event:
     )
 
 
-def merge_captured_radio(
+def _flag(event_: Event) -> bool:
+    return event_.type == "RaceControlMessage" and event_.payload.get("category") == "Flag"
+
+
+def _flag_key(event_: Event) -> tuple[object, ...]:
+    payload = event_.payload
+    action = classify_race_control(payload)
+    text = " ".join(payload["message"].upper().split())
+    return action.kind, action.value, action.sector, text
+
+
+def _validate_captured_flag(event_: Event) -> None:
+    payload = event_.payload
+    if event_.source != "f1live":
+        raise PostprocessError("captured flag must come from F1Live")
+    if not isinstance(payload.get("message"), str) or not payload["message"].strip():
+        raise PostprocessError("captured flag has invalid FIA message")
+    for key in ("flag", "scope"):
+        if key in payload and (not isinstance(payload[key], str) or not payload[key]):
+            raise PostprocessError(f"captured flag has invalid {key}")
+    if "sector" in payload and (type(payload["sector"]) is not int or payload["sector"] <= 0):
+        raise PostprocessError("captured flag has invalid sector")
+    parsed = classify_race_control({"message": payload["message"]})
+    if parsed.kind not in {"unknown", "noop"} and classify_race_control(payload).kind == "unknown":
+        raise PostprocessError("captured flag structured evidence conflicts with FIA text")
+
+
+def _merge_flags(session_id: str, canonical: list[Event], captured: list[Event]) -> tuple[list[Event], int, int, int, set[tuple[int, str]]]:
+    groups: dict[tuple[object, ...], tuple[list[Event], list[Event]]] = {}
+    for event_ in canonical:
+        if _flag(event_):
+            groups.setdefault(_flag_key(event_), ([], []))[0].append(event_)
+    for event_ in captured:
+        if _flag(event_):
+            _validate_captured_flag(event_)
+            groups.setdefault(_flag_key(event_), ([], []))[1].append(event_)
+    result: list[Event] = []
+    added = replaced = retained = 0
+    removed_times: set[tuple[int, str]] = set()
+    for canonical_group, captured_group in groups.values():
+        canonical_group.sort(key=lambda e: (e.session_time_ms, e.event_id))
+        captured_group.sort(key=lambda e: (e.session_time_ms, e.event_id))
+        pairs = min(len(canonical_group), len(captured_group))
+        replaced += pairs
+        added += len(captured_group) - pairs
+        retained += len(canonical_group) - pairs
+        removed_times.update((e.session_time_ms, e.source) for e in canonical_group[:pairs])
+        result.extend(canonical_group[pairs:])
+        for event_ in captured_group:
+            payload = dict(event_.payload)
+            result.append(event_.model_copy(update={
+                "session_id": session_id,
+                "event_id": make_event_id(session_id, event_.type, event_.session_time_ms,
+                                          event_.driver_id, payload),
+            }))
+    return result, added, replaced, retained, removed_times
+
+
+def merge_captured_live_data(
     canonical_path: Path,
     captured_path: Path,
     output_path: Path | None = None,
 ) -> MergeReport:
     """Atomically enrich a canonical FastF1 fixture with captured F1 live data.
 
-    Captured radio, validated weather, and source-backed driver status are
-    retained; other non-canonical events are ignored. Radio is deduped by
-    source identity and the remaining events by deterministic event identity.
+    Captured radio, weather, driver status and FIA flags are reconciled with
+    canonical evidence while preserving unmatched source occurrences.
     """
     canonical_path = Path(canonical_path)
     captured_path = Path(captured_path)
@@ -235,19 +298,29 @@ def merge_captured_radio(
     captured_radio = [event_ for event_ in captured if _radio(event_)]
     captured_weather = [event_ for event_ in captured if _weather(event_)]
     captured_status = [event_ for event_ in captured if _driver_status(event_)]
-    if not captured_radio and not captured_weather and not captured_status:
+    captured_flags = [event_ for event_ in captured if _flag(event_)]
+    if not captured_radio and not captured_weather and not captured_status and not captured_flags:
         written = destination != canonical_path
         if written:
             atomic_write_text(destination, dump_jsonl(canonical))
-        return MergeReport(len(canonical), len(captured), 0, 0, destination, written)
+        return MergeReport(len(canonical), len(captured), 0, 0, destination, written,
+                           race_control_retained=sum(_flag(event_) for event_ in canonical))
 
+    flags, flags_added, flags_replaced, flags_retained, removed_times = _merge_flags(
+        session_id, canonical, captured_flags,
+    )
     groups: dict[tuple[object, ...], list[tuple[bool, Event]]] = {}
     fixed = []
     for event_ in canonical:
         if _radio(event_):
             groups.setdefault(_radio_key(event_), []).append((True, event_))
+        elif _flag(event_):
+            continue
+        elif event_.type == "SessionStatusChanged" and (event_.session_time_ms, event_.source) in removed_times and event_.payload.get("evidence") != "direct":
+            continue
         else:
             fixed.append(event_)
+    fixed.extend(flags)
     fixed_ids = {event_.event_id for event_ in fixed}
     for event_ in captured_weather + captured_status:
         payload = dict(event_.payload)
@@ -288,6 +361,9 @@ def merge_captured_radio(
         radio_deduplicated=sum(len(rows) for rows in groups.values()) - len(groups),
         output_path=destination,
         written=True,
+        race_control_added=flags_added,
+        race_control_replaced=flags_replaced,
+        race_control_retained=flags_retained,
     )
 
 
