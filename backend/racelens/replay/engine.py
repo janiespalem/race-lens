@@ -16,6 +16,10 @@ import json
 from typing import Any, Iterable
 
 from racelens.events.models import Event
+from racelens.race_control import (
+    RaceControlAction, classify_race_control, initial_race_control,
+    legacy_session_status, reduce_race_control,
+)
 
 # Number of recent laps tracked per driver — used by short-horizon insight rules.
 RECENT_LAPS_WINDOW = 3
@@ -23,6 +27,7 @@ MAX_RECENT_LAP_MULTIPLIER = 1.5
 
 _EVENT_PRIORITY = {
     "SessionStarted": 0,
+    "RaceControlMessage": 5,
     "SessionStatusChanged": 10,
     "PitIn": 20,
     "PitOut": 21,
@@ -94,6 +99,9 @@ class ReplayEngine:
             seen.add(e.event_id)
             unique.append(e)
         self.events = sorted(unique, key=_event_sort_key)
+        self._race_control_sources = {
+            (e.session_time_ms, e.source) for e in self.events if e.type == "RaceControlMessage"
+        }
         self.duplicates_dropped = duplicates
         self.session_id = self.events[0].session_id if self.events else None
         self._times = [e.session_time_ms for e in self.events]
@@ -117,6 +125,7 @@ class ReplayEngine:
             "at_ms": None,
             "lap": 0,
             "session_status": "unknown",
+            **initial_race_control(),
             "session_name": None,  # e.g. "SILVERSTONE · RACE" (live only — see SessionStarted)
             "status_since_ms": 0,
             "restart_at_ms": None,
@@ -205,24 +214,42 @@ class ReplayEngine:
     def _driver(self, state: dict, driver_id: str) -> dict[str, Any]:
         return state["drivers"].setdefault(driver_id, _new_driver())
 
+    def _control(self, state: dict, action: RaceControlAction, at_ms: int) -> None:
+        previous_status = state["session_status"]
+        state.update(reduce_race_control(state, action, at_ms))
+        current_status = legacy_session_status(state)
+        if current_status != previous_status:
+            for driver in state["drivers"].values():
+                driver["recent_laps_ms"] = []
+            state["status_since_ms"] = at_ms
+            state["restart_at_ms"] = None
+        state["session_status"] = current_status
+
     def _apply(self, state: dict, e: Event) -> None:
         p = e.payload
 
         if e.type == "SessionStarted":
-            state["session_status"] = "formation" if p.get("formation") else "started"
-            state["status_since_ms"] = e.session_time_ms
+            self._control(state, RaceControlAction("phase", "formation" if p.get("formation") else "running"), e.session_time_ms)
             state["total_laps"] = p.get("total_laps")
             if "session_name" in p:
                 state["session_name"] = p["session_name"]
 
         elif e.type == "SessionStatusChanged":
-            new_status = p.get("status", state["session_status"])
-            if new_status != state["session_status"]:
-                for drv in state["drivers"].values():
-                    drv["recent_laps_ms"] = []
-            state["session_status"] = new_status
-            state["status_since_ms"] = e.session_time_ms
-            state["restart_at_ms"] = None
+            if p.get("evidence") != "derived_race_control" and (
+                p.get("evidence") == "direct" or (e.session_time_ms, e.source) not in self._race_control_sources
+            ):
+                status = p.get("status")
+                if status == "finished":
+                    action = RaceControlAction("finish")
+                elif status in {"red_flag", "safety_car", "vsc"}:
+                    action = RaceControlAction("control", status)
+                elif status == "formation":
+                    action = RaceControlAction("phase", "formation")
+                elif status == "started":
+                    action = RaceControlAction("restart")
+                else:
+                    action = RaceControlAction("noop")
+                self._control(state, action, e.session_time_ms)
 
         elif e.type == "LapCompleted":
             if (
@@ -233,9 +260,7 @@ class ReplayEngine:
                 # Some canonical feeds omit the explicit red-flag restart.
                 # A new global lap after a sustained stop is source-backed
                 # proof that racing resumed; short pit-entry crossings are not.
-                state["session_status"] = "started"
-                state["status_since_ms"] = e.session_time_ms
-                state["restart_at_ms"] = None
+                self._control(state, RaceControlAction("restart"), e.session_time_ms)
             d = self._driver(state, e.driver_id)
             d["laps_completed"] = max(d["laps_completed"], e.lap or 0)
             lap_ms = p.get("lap_time_ms")
@@ -314,6 +339,7 @@ class ReplayEngine:
                 observed[key] = e.session_time_ms
 
         elif e.type == "RaceControlMessage":
+            self._control(state, classify_race_control(p), e.session_time_ms)
             restart_at_ms = p.get("restart_at_ms")
             if isinstance(restart_at_ms, int) and restart_at_ms >= 0:
                 state["restart_at_ms"] = restart_at_ms
