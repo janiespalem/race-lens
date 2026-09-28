@@ -563,6 +563,8 @@ function App() {
         classification={state?.classification ?? []}
         totalLaps={state?.total_laps}
         sessionStatus={sessionStatus}
+        controlMode={state?.session_phase === 'finished' ? state.finish_condition?.control_mode : state?.control_mode}
+        sectorFlags={state?.session_phase === 'finished' ? state.finish_condition?.sector_flags : state?.sector_flags}
         neutralizationStartMs={replay.neutralizationStartMs}
         selectedIds={selectedIds}
         positionsData={effectivePositionsData}
@@ -751,6 +753,8 @@ function App() {
         <>
           <StatusStrip lang={lang}
             status={sessionStatus}
+            sectorFlags={state?.sector_flags}
+            finishCondition={state?.finish_condition}
             lap={state?.lap ?? null}
             atMs={replay.atMs}
             neutralizationStartMs={replay.neutralizationStartMs}

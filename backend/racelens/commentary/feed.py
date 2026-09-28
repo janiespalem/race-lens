@@ -10,6 +10,7 @@ import bisect
 from typing import Any
 
 from racelens.events.models import Event
+from racelens.race_control import classify_race_control
 from racelens.insights.passes import KIND_UNDERCUT, detect_passes
 
 # Compound display names — handle both full names and abbreviations
@@ -200,6 +201,7 @@ def render_feed(
             msg = e.payload.get("message", "")
             category = e.payload.get("category", "")
             msg_up = msg.upper()
+            control_action = classify_race_control(e.payload)
             is_stewards_update = msg_up.startswith("FIA STEWARDS:")
             has_incident = "INCIDENT" in msg_up or "INVESTIGATION" in msg_up
             has_restart = "RACE WILL RESUME AT" in msg_up
@@ -214,11 +216,7 @@ def render_feed(
             # exclude per-sector yellow/clear/green messages which are noise
             has_flag = (
                 "Flag" in category
-                and (
-                    "RED FLAG" in msg_up
-                    or "SAFETY CAR" in msg_up
-                    or "VIRTUAL SAFETY CAR" in msg_up
-                )
+                and control_action.kind in {"control", "finish"}
             )
             if not (
                 has_flag
@@ -230,7 +228,7 @@ def render_feed(
                 continue
             # Avoid duplicating SessionStatusChanged items that already cover SC/VSC/red flag
             dup = False
-            if ("RED" in msg_up and "red_flag" in emitted_status) or ("SAFETY CAR" in msg_up and "VIRTUAL" not in msg_up and "safety_car" in emitted_status) or ("VIRTUAL" in msg_up and "vsc" in emitted_status):
+            if control_action.kind == "control" and control_action.value in emitted_status:
                 dup = True
             if dup:
                 continue

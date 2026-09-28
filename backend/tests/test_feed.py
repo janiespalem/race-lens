@@ -77,6 +77,17 @@ def test_feed_session_finished():
     assert "flag" in finished[0]["text"].lower() or "Chequered" in finished[0]["text"]
 
 
+def test_feed_keeps_chequered_after_red_without_sector_chatter():
+    feed = render_feed([
+        event("race", "RaceControlMessage", 10, category="Flag", message="RED FLAG"),
+        event("race", "SessionStatusChanged", 10, status="red_flag"),
+        event("race", "RaceControlMessage", 20, category="Flag", message="YELLOW IN TRACK SECTOR 14"),
+        event("race", "RaceControlMessage", 30, category="Flag", message="CHEQUERED FLAG"),
+    ], until_ms=30)
+    assert any(item["text"] == "CHEQUERED FLAG" for item in feed)
+    assert not any("TRACK SECTOR" in item["text"] for item in feed)
+
+
 def test_feed_fastest_lap_lec():
     """LEC's lap 3 is 77_000 ms — should be absolute fastest in the race."""
     # Final lap (3 of 3): line crossings become finish placings, winner first.

@@ -11,6 +11,7 @@
     "check:insight-presentation": "node scripts/check-insight-presentation.ts",
     "check:live-lifecycle": "node scripts/check-live-lifecycle.ts && node scripts/check-replay-requests.ts",
     "check:weather": "node scripts/check-weather.ts",
+    "check:race-control": "node scripts/check-race-control.ts",
     "check:dotd": "node scripts/check-dotd-order.ts",
     "check:stints": "node scripts/check-stints.ts",
     "check:ui": "node scripts/check-broadcast-overlay.ts",
