@@ -88,6 +88,37 @@ def test_live_snapshot_accepts_old_and_new_race_control_contract():
         _validate_race_state(invalid, "race")
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda state: state.pop("control_mode"),
+        lambda state: state.update(control_since_ms=state["at_ms"] + 1),
+        lambda state: state.update(session_status="red_flag"),
+        lambda state: state.update(
+            session_phase="finished",
+            session_status="finished",
+            finish_condition=None,
+        ),
+        lambda state: state.update(
+            session_phase="finished",
+            session_status="finished",
+            finish_condition={
+                "at_ms": state["at_ms"] + 1,
+                "control_mode": "green",
+                "sector_flags": {},
+            },
+        ),
+    ],
+)
+def test_live_snapshot_rejects_inconsistent_race_control_contract(mutate):
+    state = ReplayEngine([event("race", "SessionStarted", 0)]).state_at(10)
+    state.update(frame_source="live", viewbox=None)
+    mutate(state)
+
+    with pytest.raises(LiveRecordError):
+        _validate_race_state(state, "race")
+
+
 def _archive(tmp_path):
     paths = []
     for name, content in (

@@ -1,4 +1,6 @@
 """Tests for render_feed: event ticker for the frontend."""
+import pytest
+
 from racelens.commentary.feed import render_feed
 from racelens.events.models import event
 
@@ -86,6 +88,41 @@ def test_feed_keeps_chequered_after_red_without_sector_chatter():
     ], until_ms=30)
     assert any(item["text"] == "CHEQUERED FLAG" for item in feed)
     assert not any("TRACK SECTOR" in item["text"] for item in feed)
+
+
+@pytest.mark.parametrize(
+    ("message", "status"),
+    [
+        ("RED FLAG", "red_flag"),
+        ("SAFETY CAR DEPLOYED", "safety_car"),
+        ("VIRTUAL SAFETY CAR DEPLOYED", "vsc"),
+        ("CHEQUERED FLAG", "finished"),
+    ],
+)
+def test_feed_deduplicates_race_control_projection(message, status):
+    events = [
+        event(
+            "race",
+            "RaceControlMessage",
+            10,
+            source="f1live",
+            category="Flag",
+            message=message,
+        ),
+        event(
+            "race",
+            "SessionStatusChanged",
+            10,
+            source="f1live",
+            status=status,
+            evidence="derived_race_control",
+        ),
+    ]
+
+    feed = render_feed(events, until_ms=10)
+
+    assert len(feed) == 1
+    assert feed[0]["kind"] == "SessionStatusChanged"
 
 
 def test_feed_fastest_lap_lec():

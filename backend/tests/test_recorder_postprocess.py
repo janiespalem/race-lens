@@ -97,6 +97,35 @@ def test_merge_rejects_conflicting_structured_sector_evidence(tmp_path, fields):
     assert canonical.read_bytes() == original
 
 
+@pytest.mark.parametrize(
+    ("message", "flag"),
+    [
+        ("RED FLAG", "GREEN"),
+        ("CHEQUERED FLAG", "RED"),
+        ("SAFETY CAR DEPLOYED", "VIRTUAL SAFETY CAR"),
+    ],
+)
+def test_merge_rejects_conflicting_structured_global_evidence(tmp_path, message, flag):
+    canonical = tmp_path / "canonical.jsonl"
+    captured = tmp_path / "captured.jsonl"
+    _write(canonical, [event("canonical", "SessionStarted", 0)])
+    original = canonical.read_bytes()
+    _write(captured, [event(
+        "live",
+        "RaceControlMessage",
+        10,
+        source="f1live",
+        category="Flag",
+        message=message,
+        flag=flag,
+        scope="Track",
+    )])
+
+    with pytest.raises(PostprocessError):
+        merge_captured_live_data(canonical, captured)
+    assert canonical.read_bytes() == original
+
+
 def test_merge_reports_retained_flags_when_capture_has_no_usable_data(tmp_path):
     canonical = tmp_path / "canonical.jsonl"
     captured = tmp_path / "captured.jsonl"

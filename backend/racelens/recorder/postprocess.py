@@ -248,6 +248,17 @@ def _validate_captured_flag(event_: Event) -> None:
             "flag" in payload and payload["flag"].upper() not in allowed
         ):
             raise PostprocessError("captured flag structured evidence conflicts with FIA text")
+    expected_global_flags = {
+        ("control", "red_flag"): {"RED"},
+        ("control", "safety_car"): {"SAFETY CAR"},
+        ("control", "vsc"): {"VIRTUAL SAFETY CAR", "VSC"},
+        ("finish", ""): {"CHEQUERED", "CHEQUERED FLAG"},
+        ("restart", ""): {"GREEN", "CLEAR"},
+        ("track_clear", ""): {"GREEN", "CLEAR"},
+    }
+    allowed_global = expected_global_flags.get((parsed.kind, parsed.value))
+    if allowed_global is not None and "flag" in payload and payload["flag"].upper() not in allowed_global:
+        raise PostprocessError("captured flag structured evidence conflicts with FIA text")
     if parsed.kind not in {"unknown", "noop"} and classify_race_control(payload).kind == "unknown":
         raise PostprocessError("captured flag structured evidence conflicts with FIA text")
 

@@ -61,6 +61,12 @@ def render_feed(
 
     visible = [e for e in events if e.session_time_ms <= until_ms]
     visible_sorted = sorted(visible, key=lambda e: (e.session_time_ms, e.event_id))
+    derived_statuses = {
+        (e.session_time_ms, e.source, e.payload.get("status"))
+        for e in visible_sorted
+        if e.type == "SessionStatusChanged"
+        and e.payload.get("evidence") == "derived_race_control"
+    }
 
     # Pre-build index: driver_id -> sorted list of (session_time_ms, compound)
     # for TyreStintUpdated events, used for O(log n) PitOut↔tyre pairing.
@@ -224,6 +230,16 @@ def render_feed(
                 or has_restart
                 or has_driver_flag
                 or is_stewards_update
+            ):
+                continue
+            projected_status = (
+                control_action.value
+                if control_action.kind == "control"
+                else "finished" if control_action.kind == "finish" else None
+            )
+            if (
+                projected_status is not None
+                and (e.session_time_ms, e.source, projected_status) in derived_statuses
             ):
                 continue
             # Avoid duplicating SessionStatusChanged items that already cover SC/VSC/red flag
