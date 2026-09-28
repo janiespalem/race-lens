@@ -176,6 +176,42 @@ def test_duplicate_control_and_local_flags_keep_transition_timestamps():
     assert state["sector_flags"] == {"14": "yellow"}
 
 
+def test_reconnect_replay_deduplicates_race_control_events():
+    deployed = flag("RED FLAG", 10)
+    original = ReplayEngine([event("race", "SessionStarted", 0), deployed])
+    reconnected = ReplayEngine([event("race", "SessionStarted", 0), deployed, deployed])
+    assert reconnected.duplicates_dropped == 1
+    fields = ("session_phase", "control_mode", "control_since_ms", "sector_flags",
+              "finish_condition", "session_status", "status_since_ms")
+    assert tuple(reconnected.state_at(20)[key] for key in fields) == tuple(
+        original.state_at(20)[key] for key in fields
+    )
+
+
+def test_sector_green_is_local_and_global_control_keeps_other_sectors():
+    events = [event("race", "SessionStarted", 0),
+              flag("YELLOW IN TRACK SECTOR 14", 10),
+              flag("DOUBLE YELLOW IN TRACK SECTOR 15", 20),
+              flag("SAFETY CAR DEPLOYED", 30),
+              flag("GREEN FLAG IN TRACK SECTOR 14", 40),
+              flag("VSC DEPLOYED", 50),
+              flag("RED FLAG", 60)]
+    replay = ReplayEngine(events)
+    for at_ms, mode in ((30, "safety_car"), (50, "vsc"), (60, "red_flag")):
+        assert replay.state_at(at_ms)["control_mode"] == mode
+        assert replay.state_at(at_ms)["sector_flags"].get("15") == "double_yellow"
+    assert replay.state_at(40)["sector_flags"] == {"15": "double_yellow"}
+
+
+def test_malformed_structured_message_cannot_mutate_projection():
+    events = [event("race", "SessionStarted", 0),
+              flag("YELLOW IN TRACK SECTOR 14", 10, sector="bad"),
+              flag("YELLOW IN TRACK SECTOR 15", 20, sector=14)]
+    state = ReplayEngine(events).state_at(20)
+    assert state["sector_flags"] == {}
+    assert state["session_status"] == "started"
+
+
 def test_equivalent_source_sequences_have_identical_projection(monkeypatch, tmp_path):
     from racelens.adapters import fastf1_adapter
     from racelens.adapters.f1live_adapter import ingest_f1live
