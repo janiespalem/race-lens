@@ -243,10 +243,12 @@ private fun EmptyReady(state: ScreenState, chooseReplay: (String) -> Unit) = Col
 
 @Composable
 private fun SessionTitle(state: ScreenState) = Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+    val snapshot = state.frame.snapshot
+    val control = snapshot?.let { it.controlSummary().ifEmpty { it.status.uppercase() } } ?: "WAITING"
     Text(if (state.frame.target.mode == WatchMode.LIVE) "LIVE SESSION" else "RACE REPLAY", color = Signal, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Black, fontSize = 11.sp, letterSpacing = 1.2.sp)
-    Text(state.frame.snapshot?.sessionName ?: shortName(state.frame.target.sessionId), color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Black, maxLines = 2)
-    Text("LAP ${state.frame.snapshot?.lap ?: "—"}  /  ${state.frame.snapshot?.status?.uppercase() ?: "WAITING"}  /  ${formatTime(state.frame.snapshot?.atMs ?: state.frame.target.replayMs ?: 0)}", color = Dim, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-    state.frame.snapshot?.weather?.let { weather -> Conditions(weather, state.frame.snapshot?.atMs ?: 0) }
+    Text(snapshot?.sessionName ?: shortName(state.frame.target.sessionId), color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Black, maxLines = 2)
+    Text("LAP ${snapshot?.lap ?: "—"}  /  $control  /  ${formatTime(snapshot?.atMs ?: state.frame.target.replayMs ?: 0)}", color = Dim, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+    snapshot?.weather?.let { weather -> Conditions(weather, snapshot.atMs) }
 }
 
 @Composable
