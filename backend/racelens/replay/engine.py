@@ -244,6 +244,8 @@ class ReplayEngine:
                 elif status in {"red_flag", "safety_car", "vsc"}:
                     action = RaceControlAction("control", status)
                 elif status == "formation":
+                    if p.get("evidence") == "direct":
+                        self._control(state, RaceControlAction("restart"), e.session_time_ms)
                     action = RaceControlAction("phase", "formation")
                 elif status == "started":
                     action = RaceControlAction("restart")

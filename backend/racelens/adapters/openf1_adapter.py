@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from racelens.adapters._common import message_to_status
+from racelens.race_control import normalized_source_fields
 from racelens.events.models import Event, event
 
 _BASE = "https://api.openf1.org/v1"
@@ -576,14 +577,16 @@ def _race_control_to_events(
         flag = str(row.get("flag") or "")
 
         events.append(mk(sid, "RaceControlMessage", t_ms,
-                         category=category, message=message, flag=flag))
+                         category=category, message=message,
+                         **normalized_source_fields(row)))
 
         status = message_to_status(
             message, previous_status=last_status, flag=flag,
             scope=str(row.get("scope") or ""),
         )
         if status:
-            events.append(mk(sid, "SessionStatusChanged", t_ms, status=status))
+            events.append(mk(sid, "SessionStatusChanged", t_ms, status=status,
+                             evidence="derived_race_control"))
             last_status = status
     return events
 

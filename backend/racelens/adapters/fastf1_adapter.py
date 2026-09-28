@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from racelens.adapters._common import fastf1_lap1_start, message_to_status
+from racelens.race_control import normalized_source_fields
 from racelens.events.models import Event, event, make_event_id
 
 
@@ -270,14 +271,16 @@ def _race_control_to_events(messages, sid: str, session_zero, src: str) -> list[
         text = str(msg.get("Message", ""))
         events.append(
             event(sid, "RaceControlMessage", t, source=src,
-                  category=str(msg.get("Category", "")), message=text)
+                  category=str(msg.get("Category", "")), message=text,
+                  **normalized_source_fields(msg))
         )
         status = message_to_status(
             text, previous_status=last_status,
             flag=str(msg.get("Flag", "")), scope=str(msg.get("Scope", "")),
         )
         if status is not None:
-            events.append(event(sid, "SessionStatusChanged", t, source=src, status=status))
+            events.append(event(sid, "SessionStatusChanged", t, source=src, status=status,
+                                evidence="derived_race_control"))
             last_status = status
     for sequence, item in enumerate(events):
         item.ingest_seq = sequence

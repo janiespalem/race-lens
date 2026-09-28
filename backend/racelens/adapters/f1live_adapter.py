@@ -22,6 +22,7 @@ from typing import Any, Iterator
 
 from racelens.adapters._common import message_to_status
 from racelens.events.models import WEATHER_BOUNDS, Event, event
+from racelens.race_control import normalized_source_fields
 
 # SessionStatus.Status → our SessionStatusChanged payload status
 _STATUS_MAP = {
@@ -298,11 +299,12 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
     last_status: str | None = None  # dedupe SessionStatus vs RCM-derived statuses
     session_path: str | None = None  # SessionInfo "Path", to build absolute radio audio_url
 
-    def emit_status(status: str, t_ms: int) -> None:
+    def emit_status(status: str, t_ms: int, evidence: str = "direct") -> None:
         nonlocal last_status
         if status != last_status:
             last_status = status
-            events.append(event(sid, "SessionStatusChanged", t_ms, status=status))
+            events.append(event(sid, "SessionStatusChanged", t_ms, source="f1live", status=status,
+                                evidence=evidence))
 
     def drv(num: str) -> str:
         return num_to_abbr.get(num, str(num))
@@ -503,6 +505,7 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
                 race_control_payload: dict[str, Any] = {
                     "category": str(m.get("Category", "")),
                     "message": text,
+                    **normalized_source_fields(m),
                 }
                 restart_at_ms = _restart_at_ms(text, message_posix, t0, gmt_offset_s)
                 if restart_at_ms is not None:
@@ -512,6 +515,7 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
                     "RaceControlMessage",
                     message_ms,
                     lap=lap_no,
+                    source="f1live",
                     **race_control_payload,
                 ))
                 text_upper = text.upper()
@@ -532,7 +536,7 @@ def ingest_f1live(*feed_files: str, session_id: str = "f1live") -> list[Event]:
                 if "TRACK CLEAR" in text.upper() and last_status in {"safety_car", "vsc"}:
                     status = "started"
                 if status is not None:
-                    emit_status(status, message_ms)
+                    emit_status(status, message_ms, "derived_race_control")
         elif cat == "TeamRadio":
             caps = payload.get("Captures")
             items = caps.values() if isinstance(caps, dict) else (caps or [])

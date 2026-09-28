@@ -1,23 +1,15 @@
 """Shared utilities for racelens adapters."""
 from __future__ import annotations
 
-# Flag-message → session-status mapping.
-# More-specific (longer) substrings MUST come before shorter ones that are
-# substrings of them.  In particular "CHEQUERED FLAG" must precede "RED FLAG"
-# because "CHEQUERED FLAG" contains the substring "RED FLAG"
-# (chequeRED FLAG).
-STATUS_TABLE: tuple[tuple[str, str], ...] = (
-    ("CHEQUERED FLAG", "finished"),
-    ("VIRTUAL SAFETY CAR DEPLOYED", "vsc"),
-    ("VSC DEPLOYED", "vsc"),
-    ("SAFETY CAR DEPLOYED", "safety_car"),
-    ("RED FLAG", "red_flag"),
+from racelens.race_control import (
+    STATUS_TABLE, classify_race_control, initial_race_control,
+    legacy_session_status, reduce_race_control,
 )
 
+__all__ = ("STATUS_TABLE", "message_to_status", "fastf1_lap1_start")
 
 def message_to_status(
     text: str,
-    table: tuple[tuple[str, str], ...] = STATUS_TABLE,
     *,
     previous_status: str | None = None,
     flag: str = "",
@@ -28,26 +20,23 @@ def message_to_status(
     TRACK CLEAR only ends SC/VSC. A track-wide green flag can also confirm a
     restart; a pit-exit light or sector flag cannot change session status.
     """
-    upper = text.upper()
-    if any(notice in upper for notice in (
-        "SAFETY CAR IN THIS LAP", "SC IN THIS LAP", "VIRTUAL SAFETY CAR ENDING", "VSC ENDING",
-    )):
+    action = classify_race_control({"message": text, "flag": flag, "scope": scope})
+    if action.kind in {"unknown", "noop", "sector", "clear_sector"}:
         return None
-    for needle, status in table:
-        if needle in upper:
-            return status
-    if "TRACK CLEAR" in upper:
-        return "started" if previous_status in {"safety_car", "vsc"} else None
-    if flag.upper() == "GREEN" or upper.strip() == "GREEN FLAG":
-        if "PIT EXIT" in upper or scope.upper() not in {"", "TRACK"}:
-            return None
-        return "started"
-    return {
-        "RED": "red_flag",
-        "SAFETY CAR": "safety_car",
-        "VIRTUAL SAFETY CAR": "vsc",
-        "CHEQUERED": "finished",
-    }.get(flag.upper())
+    previous = initial_race_control()
+    if previous_status in {"red_flag", "safety_car", "vsc"}:
+        previous["control_mode"] = previous_status
+    elif previous_status == "formation":
+        previous["session_phase"] = "formation"
+    elif previous_status == "started":
+        previous["session_phase"] = "running"
+    elif previous_status == "finished":
+        previous["session_phase"] = "finished"
+    result = reduce_race_control(previous, action, 0)
+    status = legacy_session_status(result)
+    return status if status != "unknown" and (
+        status != (previous_status or "unknown") or action.kind in {"control", "finish"}
+    ) else None
 
 
 def fastf1_lap1_start(lap1):
