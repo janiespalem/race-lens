@@ -37,7 +37,7 @@ from racelens.object_storage import (
     write_live_status,
 )
 from racelens.recorder.feed import inspect_feed, isolate_session
-from racelens.recorder.postprocess import merge_captured_radio, validate_archive, validate_fixture
+from racelens.recorder.postprocess import merge_captured_live_data, validate_archive, validate_fixture
 from racelens.recorder.preparation import (
     PreparationOutcome,
     PreparationRunner,
@@ -692,7 +692,7 @@ class Recorder:
         ], env=env)
         validate_fixture(paths["fixture"])
         if captured is not None:
-            merge_captured_radio(paths["fixture"], captured)
+            merge_captured_live_data(paths["fixture"], captured)
         if captured is not None and self.config.transcribe_radio:
             self._run([
                 sys.executable, "-m", "racelens.cli", "radio-transcribe",

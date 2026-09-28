@@ -122,7 +122,7 @@ def test_invalid_canonical_fixture_skips_radio_transcription(tmp_path, monkeypat
     recorder = Recorder(replace(_config(tmp_path), transcribe_radio=True))
     commands = []
     monkeypatch.setattr(recorder, "_run", lambda argv, **_kwargs: commands.append(argv))
-    monkeypatch.setattr("racelens.recorder.worker.merge_captured_radio", lambda *_args: None)
+    monkeypatch.setattr("racelens.recorder.worker.merge_captured_live_data", lambda *_args: None)
     monkeypatch.setattr(
         "racelens.recorder.worker.validate_fixture",
         lambda _path: (_ for _ in ()).throw(RuntimeError("canonical unavailable")),
