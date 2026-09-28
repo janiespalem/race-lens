@@ -241,6 +241,13 @@ def _validate_captured_flag(event_: Event) -> None:
     if "sector" in payload and (type(payload["sector"]) is not int or payload["sector"] <= 0):
         raise PostprocessError("captured flag has invalid sector")
     parsed = classify_race_control({"message": payload["message"]})
+    if parsed.kind in {"sector", "clear_sector"}:
+        expected_flags = {"yellow": {"YELLOW"}, "double_yellow": {"DOUBLE YELLOW"}}
+        allowed = expected_flags.get(parsed.value, {"GREEN", "CLEAR"})
+        if ("scope" in payload and payload["scope"].upper() != "SECTOR") or (
+            "flag" in payload and payload["flag"].upper() not in allowed
+        ):
+            raise PostprocessError("captured flag structured evidence conflicts with FIA text")
     if parsed.kind not in {"unknown", "noop"} and classify_race_control(payload).kind == "unknown":
         raise PostprocessError("captured flag structured evidence conflicts with FIA text")
 
