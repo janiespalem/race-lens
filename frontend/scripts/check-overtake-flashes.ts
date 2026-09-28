@@ -50,6 +50,7 @@ function mapRig() {
     '../../lib/trackGeometry': {},
     '../../lib/trackInterpolation': { hasFinishedRace: () => false },
     '../../lib/liveTrack': {},
+    '../../lib/raceControl': { localYellowSummary: () => null },
     './teamColors': { teamColor: () => '#fff' },
     './useTrackAnimation': { useTrackAnimation: () => ({ pathRef: {}, registerCar: () => null }) },
   }
