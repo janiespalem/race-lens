@@ -132,15 +132,27 @@ export type WeatherState = {
   wind_speed_mps?: number
 }
 
+export type SessionPhase = 'unknown' | 'formation' | 'running' | 'finished'
+export type ControlMode = 'green' | 'safety_car' | 'vsc' | 'red_flag'
+export type SectorFlag = 'yellow' | 'double_yellow'
+
+export type RaceControlState = {
+  session_phase: SessionPhase
+  control_mode: ControlMode
+  control_since_ms: number
+  sector_flags: Record<string, SectorFlag>
+  finish_condition: FinishCondition | null
+}
+
 export type RaceState = {
   session_id: string | null
   at_ms: number
   lap: number
   session_status: string
-  session_phase?: 'unknown' | 'formation' | 'running' | 'finished'
-  control_mode?: 'green' | 'safety_car' | 'vsc' | 'red_flag'
+  session_phase?: SessionPhase
+  control_mode?: ControlMode
   control_since_ms?: number
-  sector_flags?: Record<string, 'yellow' | 'double_yellow'>
+  sector_flags?: Record<string, SectorFlag>
   finish_condition?: FinishCondition | null
   /** Live-only badge text, e.g. "SILVERSTONE · RACE" (null in replay / before SessionInfo arrives). */
   session_name?: string | null
@@ -172,8 +184,8 @@ export type RaceState = {
 
 export type FinishCondition = {
   at_ms: number
-  control_mode: 'green' | 'safety_car' | 'vsc' | 'red_flag'
-  sector_flags: Record<string, 'yellow' | 'double_yellow'>
+  control_mode: ControlMode
+  sector_flags: Record<string, SectorFlag>
 }
 
 export type InsightsResponse = {
