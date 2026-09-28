@@ -38,8 +38,8 @@ export function StatusStrip({
   sectorFlags,
   finishCondition,
 }: Props) {
-  const sectors = formatLocalFlags(sectorFlags)
-  const local = localYellowSummary(sectorFlags)
+  const sectors = formatLocalFlags(sectorFlags, lang)
+  const local = localYellowSummary(sectorFlags, lang)
   const lapStr = lap != null ? `${lang === 'ru' ? 'КРУГ' : 'LAP'} ${lap}` : ''
   const timerStr =
     neutralizationStartMs != null
@@ -111,7 +111,7 @@ export function StatusStrip({
   if (status === 'finished') {
     return (
       <div className="hazard hazard-chequered">
-        <span>{finishSummary(finishCondition)}</span>
+        <span>{finishSummary(finishCondition, lang)}</span>
       </div>
     )
   }

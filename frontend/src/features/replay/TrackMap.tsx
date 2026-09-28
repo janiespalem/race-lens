@@ -51,7 +51,7 @@ function statusWatermark(status: string, lang: Lang, sectorFlags?: Record<string
   if (status === 'red_flag') return { text: lang === 'ru' ? 'КРАСНЫЙ ФЛАГ' : 'RED FLAG', color: '#cc0000' }
   if (status === 'safety_car') return { text: lang === 'ru' ? 'SC' : 'SAFETY CAR', color: '#f2a900' }
   if (status === 'vsc') return { text: lang === 'ru' ? 'VSC' : 'VIRTUAL SC', color: '#f2a900' }
-  const local = localYellowSummary(sectorFlags)
+  const local = localYellowSummary(sectorFlags, lang)
   return local ? { text: local, color: '#f2a900' } : null
 }
 
