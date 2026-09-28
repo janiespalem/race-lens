@@ -17,6 +17,7 @@ from typing import Any, ClassVar, Iterator
 
 from racelens.events.models import WEATHER_BOUNDS
 from racelens.preparations import QueueFullError, SESSION_ID
+from racelens.race_control import legacy_session_status
 
 SCHEMA_VERSION = 1
 REPLAY_ID = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
@@ -638,9 +639,14 @@ def _validate_race_state(value: object, replay_session_id: str) -> None:
             and flag in {"yellow", "double_yellow"}
             for sector, flag in flags.items()
         )
+    contract_fields = {
+        "session_phase", "control_mode", "control_since_ms", "sector_flags", "finish_condition",
+    }
+    present_contract_fields = contract_fields & set(value)
     finish = value.get("finish_condition")
     if (
-        ("session_phase" in value and not _choice(value["session_phase"],
+        (present_contract_fields and present_contract_fields != contract_fields)
+        or ("session_phase" in value and not _choice(value["session_phase"],
             {"unknown", "formation", "running", "finished"}))
         or ("control_mode" in value and not _choice(value["control_mode"], modes))
         or ("control_since_ms" in value and not _integer(value["control_since_ms"]))
@@ -654,6 +660,23 @@ def _validate_race_state(value: object, replay_session_id: str) -> None:
         ))
     ):
         raise LiveRecordError("live snapshot race control is invalid")
+    if present_contract_fields:
+        projection = {
+            "session_phase": value["session_phase"],
+            "control_mode": value["control_mode"],
+            "control_since_ms": value["control_since_ms"],
+            "sector_flags": value["sector_flags"],
+            "finish_condition": finish,
+        }
+        at_ms = value["at_ms"]
+        if (
+            not _integer(at_ms)
+            or value["control_since_ms"] > at_ms
+            or (value["session_phase"] == "finished") != (finish is not None)
+            or (finish is not None and finish["at_ms"] > at_ms)
+            or legacy_session_status(projection) != value["session_status"]
+        ):
+            raise LiveRecordError("live snapshot race control is inconsistent")
     weather = value.get("weather")
     if (
         not _integer(value["at_ms"])
