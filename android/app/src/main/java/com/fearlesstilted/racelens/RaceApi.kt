@@ -35,7 +35,45 @@ data class Weather(
     val observedAtMs: Map<String, Long> = emptyMap(),
 )
 data class Battle(val driverOneId: String, val driverTwoId: String, val intervalSeconds: Double?)
-data class RaceSnapshot(val atMs: Long, val lap: Int, val status: String, val drivers: List<DriverTiming>, val weather: Weather? = null, val sessionName: String? = null, val battle: Battle? = null)
+data class FinishCondition(val atMs: Long, val controlMode: String, val sectorFlags: Map<String, String>)
+data class RaceSnapshot(
+    val atMs: Long, val lap: Int, val status: String, val drivers: List<DriverTiming>,
+    val weather: Weather? = null, val sessionName: String? = null, val battle: Battle? = null,
+    val sessionPhase: String = "unknown", val controlMode: String = "green",
+    val controlSinceMs: Long = 0, val sectorFlags: Map<String, String> = emptyMap(),
+    val finishCondition: FinishCondition? = null,
+)
+
+private fun formatFlagSectors(flags: Map<String, String>): String = flags.entries
+    .sortedBy { it.key.toLongOrNull() ?: Long.MAX_VALUE }
+    .joinToString(" · ") { (sector, flag) -> "${if (flag == "double_yellow") "DOUBLE " else ""}S$sector" }
+
+fun RaceSnapshot.controlSummary(): String {
+    val finish = finishCondition
+    if (sessionPhase == "finished" || status == "finished") {
+        val sectors = formatFlagSectors(finish?.sectorFlags.orEmpty())
+        val mode = when (finish?.controlMode) {
+            "safety_car" -> "SAFETY CAR"
+            "vsc" -> "VSC"
+            "red_flag" -> "RED FLAG"
+            else -> if (sectors.isNotEmpty()) "LOCAL YELLOW" else ""
+        }
+        return if (mode.isEmpty()) "CHEQUERED FLAG" else
+            "CHEQUERED FLAG · FINISHED UNDER $mode${if (sectors.isNotEmpty()) " · $sectors" else ""}"
+    }
+    val sectors = formatFlagSectors(sectorFlags)
+    val global = when (controlMode) {
+        "safety_car" -> "SAFETY CAR"
+        "vsc" -> "VSC"
+        "red_flag" -> "RED FLAG"
+        else -> ""
+    }
+    return when {
+        global.isNotEmpty() -> global + if (sectors.isNotEmpty()) " · $sectors" else ""
+        sectors.isNotEmpty() -> "LOCAL YELLOW · $sectors"
+        else -> ""
+    }
+}
 data class LiveAvailability(
     val available: Boolean,
     val detail: String,
@@ -143,7 +181,7 @@ class RaceApi(private val origin: String) {
     }
 }
 
-private fun parseRaceState(json: JSONObject): RaceSnapshot {
+internal fun parseRaceState(json: JSONObject): RaceSnapshot {
     val order = json.optJSONArray("classification") ?: JSONArray()
     val drivers = json.optJSONObject("drivers") ?: JSONObject()
     val observed = parseWeatherObserved(json.optJSONObject("weather_observed_at_ms"))
@@ -151,10 +189,30 @@ private fun parseRaceState(json: JSONObject): RaceSnapshot {
         Weather(value.opt("rainfall") as? Boolean, value.optNullableDouble("track_temp_c"), value.optNullableDouble("air_temp_c"), observed)
             .takeIf { it.rainfall != null || it.trackTempC != null || it.airTempC != null }
     }
+    val status = nullableJsonString(json.opt("session_status")) ?: "unknown"
+    val phase = nullableJsonString(json.opt("session_phase"))?.takeIf {
+        it in setOf("unknown", "formation", "running", "finished")
+    } ?: when (status) {
+        "finished" -> "finished"
+        "formation" -> "formation"
+        "started", "safety_car", "vsc", "red_flag" -> "running"
+        else -> "unknown"
+    }
+    val modes = setOf("green", "safety_car", "vsc", "red_flag")
+    val mode = nullableJsonString(json.opt("control_mode"))?.takeIf { it in modes }
+        ?: status.takeIf { it in modes } ?: "green"
+    val finishJson = json.optJSONObject("finish_condition")
+    val finish = finishJson?.let { value ->
+        val at = value.opt("at_ms")
+        val finishMode = nullableJsonString(value.opt("control_mode"))
+        if (at is Number && at.toLong() >= 0 && finishMode in modes && value.optJSONObject("sector_flags") != null)
+            FinishCondition(at.toLong(), finishMode!!, parseSectorFlags(value.optJSONObject("sector_flags")))
+        else null
+    }
     return RaceSnapshot(
         atMs = json.optLong("at_ms"),
         lap = json.optInt("lap"),
-        status = nullableJsonString(json.opt("session_status")) ?: "unknown",
+        status = status,
         drivers = List(order.length()) { index ->
             val id = order.getString(index)
             val driver = drivers.optJSONObject(id) ?: JSONObject()
@@ -172,7 +230,22 @@ private fun parseRaceState(json: JSONObject): RaceSnapshot {
         weather = weather,
         sessionName = nullableJsonString(json.opt("session_name")),
         battle = parseBattles(json.optJSONArray("battles")),
+        sessionPhase = phase,
+        controlMode = mode,
+        controlSinceMs = (json.opt("control_since_ms") as? Number)?.toLong()?.coerceAtLeast(0) ?: 0,
+        sectorFlags = parseSectorFlags(json.optJSONObject("sector_flags")),
+        finishCondition = finish,
     )
+}
+
+internal fun parseSectorFlags(value: JSONObject?): Map<String, String> = buildMap {
+    if (value == null) return@buildMap
+    for (sector in value.keys()) {
+        val flag = nullableJsonString(value.opt(sector))
+        if (sector.matches(Regex("[1-9][0-9]*")) && flag in setOf("yellow", "double_yellow")) {
+            put(sector, flag!!)
+        }
+    }
 }
 
 internal fun parseSectors(items: JSONArray?): List<SectorTime?> =

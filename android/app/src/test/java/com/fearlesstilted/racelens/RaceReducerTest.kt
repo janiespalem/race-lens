@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.json.JSONObject
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
@@ -14,6 +15,35 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 
 class RaceReducerTest {
+    @Test
+    fun raceControlParserAcceptsOldSnapshotsAndRendersSortedFinishSectors() {
+        val old = parseRaceState(JSONObject("""{"at_ms":10,"lap":1,"session_status":"started"}"""))
+        assertEquals("running", old.sessionPhase)
+        assertEquals("green", old.controlMode)
+        assertEquals("", old.controlSummary())
+
+        val current = parseRaceState(JSONObject("""{
+            "at_ms":100,"lap":51,"session_status":"finished",
+            "session_phase":"finished","control_mode":"green",
+            "sector_flags":{"26":"yellow"},
+            "finish_condition":{"at_ms":90,"control_mode":"green","sector_flags":{
+                "20":"yellow","15":"double_yellow","14":"yellow"}}
+        }"""))
+        assertEquals("CHEQUERED FLAG · FINISHED UNDER LOCAL YELLOW · S14 · DOUBLE S15 · S20", current.controlSummary())
+        assertEquals("LOCAL YELLOW · S26", current.copy(sessionPhase = "running", status = "started").controlSummary())
+    }
+
+    @Test
+    fun raceControlParserIgnoresMalformedOptionalFields() {
+        val snapshot = parseRaceState(JSONObject("""{"at_ms":10,"lap":1,"session_status":"safety_car",
+            "session_phase":"wrong","sector_flags":{"oops":"yellow","14":"green"},
+            "finish_condition":{"at_ms":"oops","control_mode":"red_flag","sector_flags":{}}}"""))
+        assertEquals("running", snapshot.sessionPhase)
+        assertEquals("safety_car", snapshot.controlMode)
+        assertTrue(snapshot.sectorFlags.isEmpty())
+        assertNull(snapshot.finishCondition)
+        assertEquals("SAFETY CAR", snapshot.controlSummary())
+    }
     @Test
     fun repeatedPendingSeekKeepsItsOwnerButFailedOrInterruptedSeekCanRetry() {
         val target = WatchTarget(1, WatchMode.REPLAY, "spa_2026_race", 12_000, emptyList())
