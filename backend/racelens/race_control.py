@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import math
+from numbers import Integral, Real
 from dataclasses import dataclass
 from typing import Literal, Mapping, TypedDict
 
@@ -30,6 +32,31 @@ class RaceControlAction:
 _SECTOR = re.compile(r"^(DOUBLE YELLOW|YELLOW|CLEAR|GREEN(?: FLAG)?) IN TRACK SECTOR (\d+)$")
 _SECTOR_GREEN = re.compile(r"^GREEN FLAG (?:IN|FOR) (?:TRACK )?SECTOR (\d+)$")
 _DRIVER_FLAG = re.compile(r"^(?:WAVED BLUE FLAG|BLACK AND WHITE FLAG) FOR CAR \d+\b")
+STATUS_TABLE: tuple[tuple[str, str], ...] = (
+    ("CHEQUERED FLAG", "finished"),
+    ("VIRTUAL SAFETY CAR DEPLOYED", "vsc"),
+    ("VSC DEPLOYED", "vsc"),
+    ("SAFETY CAR DEPLOYED", "safety_car"),
+    ("RED FLAG", "red_flag"),
+)
+_CONTROL_MESSAGE_MODES = dict(STATUS_TABLE)
+
+
+def normalized_source_fields(source: Mapping[str, object]) -> dict[str, object]:
+    """Keep valid structured FIA fields without changing the original message."""
+    fields: dict[str, object] = {}
+    for target in ("flag", "scope"):
+        value = source.get(target, source.get(target.title()))
+        if isinstance(value, str) and value:
+            fields[target] = value
+    sector = source.get("sector", source.get("Sector"))
+    if isinstance(sector, str) and re.fullmatch(r"[1-9][0-9]*", sector):
+        fields["sector"] = int(sector)
+    elif isinstance(sector, Integral) and not isinstance(sector, bool) and sector > 0:
+        fields["sector"] = int(sector)
+    elif isinstance(sector, Real) and math.isfinite(sector) and sector > 0 and sector == int(sector):
+        fields["sector"] = int(sector)
+    return fields
 
 
 def initial_race_control() -> RaceControlProjection:
@@ -62,11 +89,11 @@ def classify_race_control(payload: Mapping[str, object]) -> RaceControlAction:
             return RaceControlAction("sector", "double_yellow" if flag == "DOUBLE YELLOW" else "yellow", raw_sector)
         if flag in {"CLEAR", "GREEN"}:
             return RaceControlAction("clear_sector", sector=raw_sector)
-    if upper in {"RED FLAG", "SAFETY CAR DEPLOYED", "VSC DEPLOYED", "VIRTUAL SAFETY CAR DEPLOYED"}:
-        return RaceControlAction("control", {"RED FLAG": "red_flag", "SAFETY CAR DEPLOYED": "safety_car", "VSC DEPLOYED": "vsc", "VIRTUAL SAFETY CAR DEPLOYED": "vsc"}[upper])
+    if upper in _CONTROL_MESSAGE_MODES:
+        return RaceControlAction("control", _CONTROL_MESSAGE_MODES[upper])
     if upper == "TRACK CLEAR":
         return RaceControlAction("track_clear")
-    if upper in {"STANDING START", "ROLLING START"} or (upper == "GREEN FLAG" and scope in {"", "TRACK"}):
+    if upper in {"STANDING START", "ROLLING START", "GREEN FLAG"} and scope in {"", "TRACK"}:
         return RaceControlAction("restart")
     if upper == "EXTRA FORMATION LAP" or upper == "FORMATION LAP":
         return RaceControlAction("phase", "formation")
@@ -74,7 +101,7 @@ def classify_race_control(payload: Mapping[str, object]) -> RaceControlAction:
         return RaceControlAction("noop")
     if upper == "GREEN FLAG" and scope not in {"", "TRACK"}:
         return RaceControlAction("noop")
-    if not upper and flag in {"RED", "SAFETY CAR", "VIRTUAL SAFETY CAR", "VSC"}:
+    if flag in {"RED", "SAFETY CAR", "VIRTUAL SAFETY CAR", "VSC"} and scope in {"", "TRACK"}:
         return RaceControlAction("control", {"RED": "red_flag", "SAFETY CAR": "safety_car", "VIRTUAL SAFETY CAR": "vsc", "VSC": "vsc"}[flag])
     return RaceControlAction("unknown")
 
@@ -96,6 +123,8 @@ def reduce_race_control(previous: RaceControlProjection | None, action: RaceCont
         state["sector_flags"].clear()
         if state["control_mode"] in {"safety_car", "vsc"}:
             state["control_mode"] = "green"
+            if state["session_phase"] == "unknown":
+                state["session_phase"] = "running"
     elif action.kind == "control":
         state["control_mode"] = action.value
     elif action.kind == "restart":
