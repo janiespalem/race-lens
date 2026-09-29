@@ -20,11 +20,15 @@ const packageLock = JSON.parse(read('package-lock.json'))
 const cargoManifest = read('src-tauri/Cargo.toml')
 const cargoLock = read('src-tauri/Cargo.lock')
 const cargoVersion = cargoManifest.match(/^version = "([^"]+)"$/m)?.[1]
-const cargoLockVersion = cargoLock.match(/\[\[package\]\]\nname = "race-lens"\nversion = "([^"]+)"/)?.[1]
+const readCargoLockVersion = (contents: string) => contents
+  .replaceAll('\r\n', '\n')
+  .match(/\[\[package\]\]\nname = "race-lens"\nversion = "([^"]+)"/)?.[1]
+const cargoLockVersion = readCargoLockVersion(cargoLock)
 const releaseTag = process.env.DESKTOP_RELEASE_VERSION
 const expectedVersion = releaseTag?.replace(/^desktop-v/, '') ?? config.version
 
 assert.match(expectedVersion, /^\d+\.\d+\.\d+$/)
+assert.equal(readCargoLockVersion(cargoLock.replaceAll('\n', '\r\n')), cargoLockVersion)
 for (const [source, version] of Object.entries({
   package: packageManifest.version,
   packageLock: packageLock.version,
