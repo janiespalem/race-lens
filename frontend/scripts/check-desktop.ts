@@ -15,6 +15,25 @@ assert.equal(
 assert.throws(() => withApiBase('https://example.com/api/ping'))
 
 const config = JSON.parse(read('src-tauri/tauri.conf.json'))
+const packageManifest = JSON.parse(read('package.json'))
+const packageLock = JSON.parse(read('package-lock.json'))
+const cargoManifest = read('src-tauri/Cargo.toml')
+const cargoLock = read('src-tauri/Cargo.lock')
+const cargoVersion = cargoManifest.match(/^version = "([^"]+)"$/m)?.[1]
+const cargoLockVersion = cargoLock.match(/\[\[package\]\]\nname = "race-lens"\nversion = "([^"]+)"/)?.[1]
+const releaseTag = process.env.DESKTOP_RELEASE_VERSION
+const expectedVersion = releaseTag?.replace(/^desktop-v/, '') ?? config.version
+
+assert.match(expectedVersion, /^\d+\.\d+\.\d+$/)
+for (const [source, version] of Object.entries({
+  package: packageManifest.version,
+  packageLock: packageLock.version,
+  packageLockRoot: packageLock.packages[''].version,
+  cargo: cargoVersion,
+  cargoLock: cargoLockVersion,
+  tauri: config.version,
+})) assert.equal(version, expectedVersion, `${source} version must match ${expectedVersion}`)
+
 assert.deepEqual(config.bundle.targets, ['nsis'])
 assert.equal(config.build.beforeBuildCommand, 'npm run build:desktop')
 assert.equal(existsSync(resolve(root, 'src-tauri/icons/icon.ico')), true, 'Windows app icon exists')
@@ -34,5 +53,6 @@ const workflow = read('../.github/workflows/desktop-release.yml')
 assert.match(workflow, /desktop-v\*/)
 assert.match(workflow, /windows-latest/)
 assert.match(workflow, /x86_64-pc-windows-msvc/)
+assert.match(workflow, /DESKTOP_RELEASE_VERSION:\s*\$\{\{ github\.ref_name \}\}/)
 
 console.log('Desktop URL, CORS, Tauri, and release config check passed')
