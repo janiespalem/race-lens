@@ -60,7 +60,7 @@ Choose your surface:
 
 - **Web:** open the link above; nothing to install.
 - **Windows:** download the unsigned x64 installer from
-  [Desktop v0.1.0](https://github.com/fearlesstilted/race-lens/releases/tag/desktop-v0.1.0).
+  [Desktop v0.2.0](https://github.com/janiespalem/race-lens/releases/tag/desktop-v0.2.0).
   It is a pre-release, so Windows SmartScreen may ask for confirmation.
 - **Terminal:** install the read-only
   [TUI v0.1.0](https://github.com/fearlesstilted/race-lens/releases/tag/tui-v0.1.0)

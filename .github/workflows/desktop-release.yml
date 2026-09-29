@@ -25,6 +25,11 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
         working-directory: frontend
+      - name: Verify desktop release metadata
+        run: npm run check:desktop
+        working-directory: frontend
+        env:
+          DESKTOP_RELEASE_VERSION: ${{ github.ref_name }}
       - uses: tauri-apps/tauri-action@944946e3e4cac6603d1fe8f514171e9ecd3c78aa # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
