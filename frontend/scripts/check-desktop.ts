@@ -52,6 +52,7 @@ assert.doesNotMatch(api, /allow_origins=\["\*"\]/)
 const workflow = read('../.github/workflows/desktop-release.yml')
 assert.match(workflow, /desktop-v\*/)
 assert.match(workflow, /windows-latest/)
+assert.match(workflow, /node-version:\s*"22"/)
 assert.match(workflow, /x86_64-pc-windows-msvc/)
 assert.match(workflow, /DESKTOP_RELEASE_VERSION:\s*\$\{\{ github\.ref_name \}\}/)
 
