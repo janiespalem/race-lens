@@ -28,7 +28,8 @@ const releaseTag = process.env.DESKTOP_RELEASE_VERSION
 const expectedVersion = releaseTag?.replace(/^desktop-v/, '') ?? config.version
 
 assert.match(expectedVersion, /^\d+\.\d+\.\d+$/)
-assert.equal(readCargoLockVersion(cargoLock.replaceAll('\n', '\r\n')), cargoLockVersion)
+const cargoLockWithCrlf = cargoLock.replaceAll('\r\n', '\n').replaceAll('\n', '\r\n')
+assert.equal(readCargoLockVersion(cargoLockWithCrlf), cargoLockVersion)
 for (const [source, version] of Object.entries({
   package: packageManifest.version,
   packageLock: packageLock.version,
