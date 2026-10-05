@@ -328,6 +328,31 @@ def test_validate_archive_rejects_one_sample_per_driver(tmp_path):
         validate_archive(fixture, track, positions)
 
 
+def test_validate_archive_ignores_progress_outside_the_driver_active_window(tmp_path):
+    fixture, track, positions = _archive(tmp_path)
+    payload = json.loads(positions.read_text())
+    payload["drivers"]["HAM"] = [[0, 0]] * 602
+    payload["progress"]["HAM"] = [None] * 151 + [0.0] * 300 + [None] * 151
+    positions.write_text(json.dumps(payload), encoding="utf-8")
+
+    report = validate_archive(fixture, track, positions)
+
+    assert report.progress_frame_coverage == 1
+
+
+def test_validate_archive_rejects_progress_holes_inside_the_active_window(tmp_path):
+    fixture, track, positions = _archive(tmp_path)
+    payload = json.loads(positions.read_text())
+    payload["drivers"]["HAM"] = [[0, 0]] * 600
+    payload["progress"]["HAM"] = (
+        [None] * 150 + [0.0] + [None] * 151 + [0.0] * 148 + [None] * 150
+    )
+    positions.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ArchiveValidationError, match="progress frame coverage"):
+        validate_archive(fixture, track, positions)
+
+
 def test_validate_archive_rejects_a_different_session_identity(tmp_path):
     fixture, track, positions = _archive(tmp_path)
     payload = json.loads(track.read_text())

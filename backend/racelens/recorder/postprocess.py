@@ -431,6 +431,17 @@ def _frames(
     return rows, next(iter(lengths)), covered, non_null
 
 
+def _active_frame_coverage(rows: dict[str, list], frames: int) -> float:
+    minimum_span = min(frames, 300)
+    present = expected = 0
+    for values in rows.values():
+        indices = [index for index, value in enumerate(values) if value is not None]
+        present += len(indices)
+        active_span = indices[-1] - indices[0] + 1 if indices else 0
+        expected += max(active_span, minimum_span)
+    return present / expected
+
+
 def validate_archive(
     fixture_path: Path,
     track_path: Path,
@@ -485,7 +496,7 @@ def validate_archive(
     drivers, frames, position_drivers, position_non_null = _frames(
         positions.get("drivers"), "drivers", xy=True,
     )
-    progress, progress_frames, progress_drivers, progress_non_null = _frames(
+    progress, progress_frames, progress_drivers, _progress_non_null = _frames(
         positions.get("progress"), "progress", xy=False,
     )
     if set(drivers) != set(progress) or frames != progress_frames:
@@ -501,7 +512,7 @@ def validate_archive(
         raise ArchiveValidationError(f"progress driver coverage is {progress_coverage:.0%}")
     cells = driver_count * frames
     position_frame_coverage = position_non_null / cells
-    progress_frame_coverage = progress_non_null / cells
+    progress_frame_coverage = _active_frame_coverage(progress, frames)
     if position_frame_coverage < min_position_frame_coverage:
         raise ArchiveValidationError(
             f"position frame coverage is {position_frame_coverage:.0%}"
