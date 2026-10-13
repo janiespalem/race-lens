@@ -14,7 +14,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from racelens.adapters.f1live_adapter import ingest_f1live
 from racelens.commentary.feed import render_feed
@@ -26,6 +26,7 @@ from racelens.object_storage import (
     LIVE_SNAPSHOT_TTL_S,
     MAX_LIVE_SNAPSHOT_BYTES,
     MAX_RECORD_BYTES,
+    REPLAY_ID,
     LiveRecordError,
     ObjectPreparationQueue,
     S3Store,
@@ -36,6 +37,9 @@ from racelens.object_storage import (
     write_live_snapshot,
     write_live_status,
 )
+from racelens.radio.archive_maintenance import MaintenanceBudget, RadioArchiveMaintainer
+from racelens.radio.models import RadioSummary
+from racelens.radio.transcribe import transcribe_final
 from racelens.recorder.feed import inspect_feed, isolate_session
 from racelens.recorder.postprocess import merge_captured_live_data, validate_archive, validate_fixture
 from racelens.recorder.preparation import (
@@ -96,6 +100,7 @@ class Config:
     transcribe_radio: bool
     race_core: Path
     git_publication: bool = True
+    radio_maintenance_mode: Literal["off", "dry-run", "enabled"] = "off"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -116,6 +121,9 @@ class Config:
         git_publication = os.environ.get("RECORDER_GIT_PUBLICATION", "1").lower() in {
             "1", "true", "yes",
         }
+        maintenance_mode = os.environ.get("RECORDER_RADIO_MAINTENANCE", "off")
+        if maintenance_mode not in {"off", "dry-run", "enabled"}:
+            raise ValueError("RECORDER_RADIO_MAINTENANCE must be off, dry-run, or enabled")
         return cls(
             state_dir=base / "state",
             raw_dir=base / "raw",
@@ -127,6 +135,7 @@ class Config:
             transcribe_radio=transcribe,
             race_core=Path(os.environ.get("RACELENS_RACE_CORE", "/usr/local/bin/race-core")),
             git_publication=git_publication,
+            radio_maintenance_mode=maintenance_mode,
         )
 
 
@@ -139,6 +148,7 @@ class Recorder:
         sleep: Callable[[float], None] = time.sleep,
         object_store: object | None = None,
         preparation_runner: PreparationRunner | None = None,
+        radio_maintainer: RadioArchiveMaintainer | None = None,
         owns_coordinator_heartbeat: bool = True,
     ) -> None:
         self.config = config
@@ -156,6 +166,19 @@ class Recorder:
             storage_config = StorageConfig.from_env()
             object_store = S3Store(storage_config) if storage_config is not None else None
         self.object_store = object_store
+        self.radio_maintainer = radio_maintainer
+        if (
+            self.radio_maintainer is None
+            and object_store is not None
+            and config.radio_maintenance_mode != "off"
+        ):
+            self.radio_maintainer = RadioArchiveMaintainer(
+                object_store,
+                config.state_dir / "radio-maintenance",
+                transcribe_final,
+                publish=config.radio_maintenance_mode == "enabled",
+                now=self.now,
+            )
         self.remote_queue = (
             ObjectPreparationQueue(object_store) if object_store is not None else None
         )
@@ -678,7 +701,7 @@ class Recorder:
         *,
         captured: Path | None,
         full: bool,
-    ) -> tuple[list[Path], int]:
+    ) -> tuple[list[Path], int, RadioSummary | None]:
         paths = self._paths(session)
         archive_dir = paths["fixture"].parent
         archive_dir.mkdir(parents=True, exist_ok=True)
@@ -693,14 +716,15 @@ class Recorder:
         validate_fixture(paths["fixture"])
         if captured is not None:
             merge_captured_live_data(paths["fixture"], captured)
-        if captured is not None and self.config.transcribe_radio:
+        transcribed = captured is not None and self.config.transcribe_radio
+        if transcribed:
             self._run([
                 sys.executable, "-m", "racelens.cli", "radio-transcribe",
                 str(paths["fixture"]),
             ], env=env)
         event_count = validate_fixture(paths["fixture"])
         if not full:
-            return [paths["fixture"]], event_count
+            return [paths["fixture"]], event_count, None
         self._run([
             sys.executable, "-m", "racelens.cli", "track", str(session.year),
             session.event_name, session.kind, "-o", str(paths["track"]),
@@ -719,13 +743,20 @@ class Recorder:
         ], env=env)
         report = validate_archive(paths["fixture"], paths["track"], paths["positions"])
         paths["positions_raw"].unlink(missing_ok=True)
-        return [paths["fixture"], paths["track"], paths["positions"]], report.events
+        radio_summary = None
+        if transcribed:
+            from racelens.radio.transcribe import summarize_fixture
+
+            radio_summary = summarize_fixture(paths["fixture"])
+        return [paths["fixture"], paths["track"], paths["positions"]], report.events, radio_summary
 
     def _publish(
         self,
         session: ScheduledSession,
         artifacts: list[Path],
         event_count: int,
+        *,
+        radio_summary: RadioSummary | None = None,
     ) -> None:
         if self.config.git_publication:
             self._stage(session, artifacts)
@@ -737,6 +768,7 @@ class Recorder:
                 replay_id,
                 *artifacts,
                 event_count=event_count,
+                radio_summary=radio_summary.to_manifest() if radio_summary is not None else None,
             )
             self.remote_queue.finish(
                 session.session_id,
@@ -805,17 +837,17 @@ class Recorder:
             "--session", session.kind, "-o", str(paths["provisional"]),
         ], env=env)
         full = session.kind in self.config.publish_sessions
-        artifacts, event_count = self._build_archive(
+        artifacts, event_count, radio_summary = self._build_archive(
             session, captured=paths["provisional"], full=full,
         )
         if full:
-            self._publish(session, artifacts, event_count)
+            self._publish(session, artifacts, event_count, radio_summary=radio_summary)
 
     def process_requested(self, session: ScheduledSession, replay_id: str) -> None:
         if fixture_stem(session) != replay_id:
             raise RuntimeError("requested replay ID differs from the FastF1 schedule")
-        artifacts, event_count = self._build_archive(session, captured=None, full=True)
-        self._publish(session, artifacts, event_count)
+        artifacts, event_count, radio_summary = self._build_archive(session, captured=None, full=True)
+        self._publish(session, artifacts, event_count, radio_summary=radio_summary)
 
     def _run_remote_once(self) -> str:
         if self.remote_queue is None:
@@ -1036,6 +1068,18 @@ class Recorder:
 
         remote = self._run_remote_once()
         if remote == "idle":
+            if self.config.radio_maintenance_mode != "off" and self.radio_maintainer is not None:
+                result = self.radio_maintainer.run_once(MaintenanceBudget(1, 3, 60.0))
+                if result.status != "idle":
+                    replay_id = result.replay_session_id
+                    if replay_id is None or not REPLAY_ID.fullmatch(replay_id):
+                        replay_id = "-"
+                    return (
+                        f"radio maintenance {result.status}: {replay_id} "
+                        f"scanned={result.clips_scanned} processed={result.clips_processed} "
+                        f"reused={result.clips_reused} accepted={result.accepted} "
+                        f"rejected={result.rejected}"
+                    )
             self._sync_completed_awards(sessions)
             if next_capture is not None:
                 return (
