@@ -28,11 +28,13 @@ MODEL_NAME = "medium"  # spike winner; large-v3-int8 was slower AND noisier
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
 TRANSCRIPT_METADATA = {
     "model": MODEL_NAME,
-    "profile": "current-medium-int8-quality-gated",
-    "version": 2,
+    "profile": "final-medium-int8-word-gated",
+    "version": 3,
 }
-# Conservative screen: rejected 2/5 visibly corrupted Singapore samples and 0/4 controls.
 MIN_SEGMENT_AVG_LOGPROB = -0.75
+MIN_WORD_PROBABILITY = 0.20
+MIN_LOW_CONFIDENCE_WORDS = 2
+MAX_LOW_CONFIDENCE_WORD_RATIO = 0.07
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +52,9 @@ def _model():
     return WhisperModel(MODEL_NAME, device="cpu", compute_type="int8")
 
 
-def _quality_metadata(segments: list[Any]) -> tuple[dict[str, Any], str | None]:
+def _quality_metadata(
+    segments: list[Any], *, inspect_words: bool,
+) -> tuple[dict[str, Any], str | None]:
     min_avg_logprob = min(segment.avg_logprob for segment in segments)
     quality = {
         "segments": len(segments),
@@ -61,10 +65,38 @@ def _quality_metadata(segments: list[Any]) -> tuple[dict[str, Any], str | None]:
     }
     if min_avg_logprob < MIN_SEGMENT_AVG_LOGPROB:
         return quality, "low_log_probability"
+    if inspect_words:
+        probabilities = [
+            float(word.probability)
+            for segment in segments
+            for word in (segment.words or [])
+        ]
+        low_confidence_words = sum(
+            probability < MIN_WORD_PROBABILITY for probability in probabilities
+        )
+        low_confidence_word_ratio = (
+            low_confidence_words / len(probabilities) if probabilities else 1.0
+        )
+        quality.update({
+            "words": len(probabilities),
+            "low_confidence_words": low_confidence_words,
+            "min_required_word_probability": MIN_WORD_PROBABILITY,
+            "max_low_confidence_word_ratio": MAX_LOW_CONFIDENCE_WORD_RATIO,
+        })
+        if not probabilities:
+            return quality, "missing_word_confidence"
+        # Count plus density tolerates one weak proper noun in an otherwise clear clip.
+        if (
+            low_confidence_words >= MIN_LOW_CONFIDENCE_WORDS
+            and low_confidence_word_ratio >= MAX_LOW_CONFIDENCE_WORD_RATIO
+        ):
+            return quality, "low_word_confidence"
     return quality, None
 
 
-def transcribe_result(url: str) -> TranscriptionResult | None:
+def _transcribe_result(
+    url: str, *, inspect_words: bool,
+) -> TranscriptionResult | None:
     """Download and inspect one radio clip. None only on processing failure."""
     model = _model()
     if model is None:
@@ -77,13 +109,16 @@ def transcribe_result(url: str) -> TranscriptionResult | None:
                     raise ValueError("radio clip exceeds byte limit")
                 tmp.write(audio)
             tmp.flush()
-            generated, _ = model.transcribe(tmp.name, language="en", vad_filter=True)
+            options = {"language": "en", "vad_filter": True}
+            if inspect_words:
+                options["word_timestamps"] = True
+            generated, _ = model.transcribe(tmp.name, **options)
             segments = [segment for segment in generated if segment.text.strip()]
             metadata = dict(TRANSCRIPT_METADATA)
             if not segments:
                 metadata.update({"status": "rejected", "reason": "no_speech"})
                 return TranscriptionResult(None, metadata)
-            quality, reason = _quality_metadata(segments)
+            quality, reason = _quality_metadata(segments, inspect_words=inspect_words)
             metadata["quality"] = quality
             if reason is not None:
                 metadata.update({"status": "rejected", "reason": reason})
@@ -96,9 +131,14 @@ def transcribe_result(url: str) -> TranscriptionResult | None:
         return None
 
 
+def transcribe_result(url: str) -> TranscriptionResult | None:
+    """Build a word-confidence-gated result for durable replay publication."""
+    return _transcribe_result(url, inspect_words=True)
+
+
 def transcribe(url: str) -> str | None:
-    """Compatibility wrapper returning only quality-gated text."""
-    result = transcribe_result(url)
+    """Return a fast, segment-confidence-gated transcript for live mode."""
+    result = _transcribe_result(url, inspect_words=False)
     return result.text if result is not None else None
 
 
