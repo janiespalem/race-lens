@@ -187,6 +187,12 @@ def _radio_state(payload: dict[str, Any]) -> str:
         raise ValueError("invalid radio transcript metadata")
     profile = metadata.get("profile")
     policy = metadata.get("policy")
+    if (
+        profile == CURRENT_RADIO_PROFILE
+        and "model" in metadata
+        and metadata["model"] != MODEL_NAME
+    ):
+        raise ValueError("radio model contradicts transcript profile")
     legacy_versions = {
         "current-medium-int8": 1,
         "current-medium-int8-quality-gated": 2,

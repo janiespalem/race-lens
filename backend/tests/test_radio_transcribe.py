@@ -608,6 +608,36 @@ def test_enrich_fixture_rejects_ambiguous_ownership_before_transcribing(
     assert path.read_bytes() == original
 
 
+@pytest.mark.parametrize("status", ["accepted", "rejected"])
+def test_enrich_fixture_rejects_contradictory_model_before_inference_or_writes(
+    tmp_path, monkeypatch, status,
+) -> None:
+    payload = {"transcript_metadata": {**_current_metadata(status), "model": "tiny"}}
+    if status == "accepted":
+        payload["transcript"] = "Box this lap."
+    path = _write_radio_fixture(tmp_path, [{}, payload])
+    original = path.read_bytes()
+    calls = []
+    _stub_transcription(monkeypatch, _Segment("Box this lap.", -0.42, 0.03, 1.2), calls)
+
+    with pytest.raises(ValueError):
+        rt.enrich_fixture(path)
+
+    assert calls == []
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("status", ["accepted", "rejected"])
+def test_summarize_fixture_rejects_contradictory_model(tmp_path, status) -> None:
+    payload = {"transcript_metadata": {**_current_metadata(status), "model": "tiny"}}
+    if status == "accepted":
+        payload["transcript"] = "Box this lap."
+    path = _write_radio_fixture(tmp_path, [payload])
+
+    with pytest.raises(ValueError):
+        rt.summarize_fixture(path)
+
+
 def test_live_worker_close_waits_and_releases_model(monkeypatch) -> None:
     completed: list[str] = []
     cleared: list[bool] = []
