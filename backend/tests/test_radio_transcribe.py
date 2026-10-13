@@ -18,17 +18,25 @@ from racelens.radio.evaluate import (
 
 
 class _Segment:
-    def __init__(self, text, avg_logprob, no_speech_prob, compression_ratio):
+    def __init__(
+        self, text, avg_logprob, no_speech_prob, compression_ratio, word_probabilities=None,
+    ):
         self.text = text
         self.avg_logprob = avg_logprob
         self.no_speech_prob = no_speech_prob
         self.compression_ratio = compression_ratio
+        self.words = [
+            type("Word", (), {"probability": probability})()
+            for probability in (word_probabilities or [0.9])
+        ]
 
 
-def _stub_transcription(monkeypatch, segment) -> None:
+def _stub_transcription(monkeypatch, segment, calls=None) -> None:
     class Model:
         @staticmethod
-        def transcribe(*_args, **_kwargs):
+        def transcribe(*_args, **kwargs):
+            if calls is not None:
+                calls.append(kwargs)
             return [segment], None
 
     class Response:
@@ -86,7 +94,7 @@ def test_transcribe_rejects_oversized_radio_clip(monkeypatch) -> None:
     assert not model.called
 
 
-def test_transcribe_result_rejects_low_confidence_text(monkeypatch) -> None:
+def test_transcribe_result_rejects_low_segment_confidence(monkeypatch) -> None:
     _stub_transcription(monkeypatch, _Segment(
         "I feel softly licking between my feet.", -0.81, 0.12, 1.1,
     ))
@@ -109,8 +117,8 @@ def test_transcribe_result_keeps_confident_text_and_diagnostics(monkeypatch) -> 
     assert result.text == "Box this lap."
     assert result.metadata == {
         "model": "medium",
-        "profile": "current-medium-int8-quality-gated",
-        "version": 2,
+        "profile": "final-medium-int8-word-gated",
+        "version": 3,
         "status": "accepted",
         "quality": {
             "segments": 1,
@@ -118,8 +126,97 @@ def test_transcribe_result_keeps_confident_text_and_diagnostics(monkeypatch) -> 
             "min_required_avg_logprob": -0.75,
             "max_no_speech_prob": pytest.approx(0.03),
             "max_compression_ratio": pytest.approx(1.2),
+            "words": 1,
+            "low_confidence_words": 0,
+            "max_low_confidence_word_ratio": 0.07,
+            "min_required_word_probability": 0.2,
         },
     }
+
+
+def test_final_transcript_rejects_dense_low_confidence_words(monkeypatch) -> None:
+    calls = []
+    _stub_transcription(
+        monkeypatch,
+        _Segment(
+            "Mr Chuck Limmons, keep an eye on this.",
+            -0.53,
+            0.03,
+            1.2,
+            [0.19, 0.59, 0.18, 0.72, 0.99, 0.99, 0.99, 0.98],
+        ),
+        calls,
+    )
+
+    result = rt.transcribe_result("https://provider.test/radio.mp3")
+
+    assert result is not None
+    assert result.text is None
+    assert result.metadata["reason"] == "low_word_confidence"
+    assert result.metadata["quality"]["low_confidence_words"] == 2
+    assert calls == [{"language": "en", "vad_filter": True, "word_timestamps": True}]
+
+
+def test_final_transcript_tolerates_one_weak_word(monkeypatch) -> None:
+    _stub_transcription(
+        monkeypatch,
+        _Segment(
+            "Car is trying to pick up the pace.",
+            -0.33,
+            0.03,
+            1.2,
+            [0.09, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9],
+        ),
+    )
+
+    result = rt.transcribe_result("https://provider.test/radio.mp3")
+
+    assert result is not None
+    assert result.text == "Car is trying to pick up the pace."
+    assert result.metadata["status"] == "accepted"
+
+
+def test_final_transcript_tolerates_sparse_weak_words(monkeypatch) -> None:
+    _stub_transcription(
+        monkeypatch,
+        _Segment(
+            "A long otherwise clear radio message.",
+            -0.33,
+            0.03,
+            1.2,
+            [0.1, 0.1, *([0.9] * 38)],
+        ),
+    )
+
+    result = rt.transcribe_result("https://provider.test/radio.mp3")
+
+    assert result is not None
+    assert result.text == "A long otherwise clear radio message."
+    assert result.metadata["status"] == "accepted"
+
+
+def test_final_transcript_rejects_missing_word_confidence(monkeypatch) -> None:
+    segment = _Segment("Box this lap.", -0.42, 0.03, 1.2)
+    segment.words = []
+    _stub_transcription(monkeypatch, segment)
+
+    result = rt.transcribe_result("https://provider.test/radio.mp3")
+
+    assert result is not None
+    assert result.text is None
+    assert result.metadata["reason"] == "missing_word_confidence"
+
+
+def test_live_transcript_keeps_fast_profile(monkeypatch) -> None:
+    calls = []
+    _stub_transcription(
+        monkeypatch,
+        _Segment("Box this lap.", -0.42, 0.03, 1.2, [0.1, 0.1, 0.9]),
+        calls,
+    )
+
+    assert rt.transcribe("https://provider.test/radio.mp3") == "Box this lap."
+    assert calls == [{"language": "en", "vad_filter": True}]
 
 
 def test_enrich_fixture_fills_and_skips(tmp_path, monkeypatch) -> None:
@@ -155,8 +252,8 @@ def test_enrich_fixture_fills_and_skips(tmp_path, monkeypatch) -> None:
     assert got[0]["payload"]["transcript"] == "text for https://x/1.mp3"
     assert got[0]["payload"]["transcript_metadata"] == {
         "model": "medium",
-        "profile": "current-medium-int8-quality-gated",
-        "version": 2,
+        "profile": "final-medium-int8-word-gated",
+        "version": 3,
         "status": "accepted",
     }
     assert got[1]["payload"]["transcript"] == "old"  # untouched
