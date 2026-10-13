@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from racelens import cli
 from racelens.commentary.feed import render_feed
 from racelens.events.models import dump_jsonl, event, load_jsonl, make_event_id
 from racelens.radio import transcribe as rt
@@ -63,6 +64,77 @@ def test_feed_carries_transcript() -> None:
     items = render_feed([e], until_ms=2000)
     radio = [i for i in items if i.get("audio_url")]
     assert radio and radio[0]["transcript"] == "box box"
+
+
+def test_transcribe_final_returns_accepted_decision(monkeypatch) -> None:
+    calls = []
+    _stub_transcription(monkeypatch, _Segment("Box this lap.", -0.42, 0.03, 1.2), calls)
+
+    decision = rt.transcribe_final("https://provider.test/radio.mp3")
+
+    assert decision.status == "accepted"
+    assert decision.text == "Box this lap."
+    assert decision.reason is None
+    assert decision.metadata["profile"] == "medium-int8-word-timestamps-v1"
+    assert decision.metadata["policy"] == "f1-confidence-gate-v1"
+    assert decision.metadata["status"] == "accepted"
+    assert decision.metadata["quality"]["words"] == 1
+    assert calls == [{"language": "en", "vad_filter": True, "word_timestamps": True}]
+
+
+def test_transcribe_final_returns_rejected_decision(monkeypatch) -> None:
+    _stub_transcription(monkeypatch, _Segment("Uncertain words.", -0.81, 0.12, 1.1))
+
+    decision = rt.transcribe_final("https://provider.test/radio.mp3")
+
+    assert decision.status == "rejected"
+    assert decision.text is None
+    assert decision.reason == "low_log_probability"
+    assert decision.metadata["status"] == "rejected"
+    assert decision.metadata["reason"] == "low_log_probability"
+    assert decision.metadata["quality"]["min_avg_logprob"] == pytest.approx(-0.81)
+
+
+@pytest.mark.parametrize("failure_at", ["model", "download", "inference"])
+def test_transcribe_final_returns_deferred_without_sensitive_error(
+    monkeypatch, capsys, failure_at,
+) -> None:
+    url = "https://provider.test/radio.mp3?secret=credential"
+    sensitive_error = "private provider response"
+    _stub_transcription(monkeypatch, _Segment("Box this lap.", -0.42, 0.03, 1.2))
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError(f"{url}: {sensitive_error}")
+
+    if failure_at == "model":
+        monkeypatch.setattr(rt, "_model", fail)
+    elif failure_at == "download":
+        monkeypatch.setattr(rt.urllib.request, "urlopen", fail)
+    else:
+        model = rt._model()
+        model.transcribe = fail
+        monkeypatch.setattr(rt, "_model", lambda: model)
+
+    decision = rt.transcribe_final(url)
+
+    assert decision.status == "deferred"
+    assert decision.text is None
+    assert decision.reason == "processing_failed"
+    assert url not in json.dumps(decision.metadata)
+    assert sensitive_error not in json.dumps(decision.metadata)
+    logs = capsys.readouterr().err
+    assert url not in logs
+    assert sensitive_error not in logs
+
+
+def test_transcribe_final_defers_unavailable_model(monkeypatch) -> None:
+    monkeypatch.setattr(rt, "_model", lambda: None)
+
+    decision = rt.transcribe_final("https://provider.test/radio.mp3")
+
+    assert decision.status == "deferred"
+    assert decision.text is None
+    assert decision.reason == "processing_failed"
 
 
 def test_transcribe_rejects_oversized_radio_clip(monkeypatch) -> None:
@@ -240,10 +312,12 @@ def test_enrich_fixture_fills_and_skips(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(
         rt,
-        "transcribe_result",
-        lambda url: rt.TranscriptionResult(
+        "transcribe_final",
+        lambda url: rt.FinalTranscriptDecision(
+            status="accepted",
             text=f"text for {url}",
-            metadata={**rt.TRANSCRIPT_METADATA, "status": "accepted"},
+            reason=None,
+            metadata=_current_metadata("accepted"),
         ),
     )
     assert rt.enrich_fixture(fx) == 1  # only the transcript-less radio event
@@ -252,7 +326,8 @@ def test_enrich_fixture_fills_and_skips(tmp_path, monkeypatch) -> None:
     assert got[0]["payload"]["transcript"] == "text for https://x/1.mp3"
     assert got[0]["payload"]["transcript_metadata"] == {
         "model": "medium",
-        "profile": "final-medium-int8-word-gated",
+        "profile": "medium-int8-word-timestamps-v1",
+        "policy": "f1-confidence-gate-v1",
         "version": 3,
         "status": "accepted",
     }
@@ -284,20 +359,16 @@ def test_enrich_fixture_rechecks_old_machine_text_but_preserves_manual_text(
                      "audio_url": "https://x/manual.mp3", "transcript": "Manual text"}},
     ]
     fx.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
-    rejected = rt.TranscriptionResult(
+    rejected = rt.FinalTranscriptDecision(
+        status="rejected",
         text=None,
-        metadata={
-            "model": "medium",
-            "profile": "current-medium-int8-quality-gated",
-            "version": 2,
-            "status": "rejected",
-            "reason": "low_log_probability",
-        },
+        reason="low_log_probability",
+        metadata=_current_metadata("rejected"),
     )
     calls = []
     monkeypatch.setattr(
         rt,
-        "transcribe_result",
+        "transcribe_final",
         lambda url: calls.append(url) or rejected,
     )
 
@@ -320,17 +391,13 @@ def test_enrich_fixture_does_not_retry_current_rejection(tmp_path, monkeypatch) 
         "payload": {
             "category": "Radio", "message": "RADIO: ANT",
             "audio_url": "https://x/rejected.mp3",
-            "transcript_metadata": {
-                **rt.TRANSCRIPT_METADATA,
-                "status": "rejected",
-                "reason": "low_log_probability",
-            },
+            "transcript_metadata": _current_metadata("rejected"),
         },
     }
     fx.write_text(json.dumps(row) + "\n")
     monkeypatch.setattr(
         rt,
-        "transcribe_result",
+        "transcribe_final",
         lambda _url: pytest.fail("current result must not be reprocessed"),
     )
 
@@ -348,10 +415,12 @@ def test_enrich_fixture_restores_order_after_event_id_changes(tmp_path, monkeypa
     fx.write_text(dump_jsonl(sorted([radio, other], key=lambda item: item.event_id)))
     monkeypatch.setattr(
         rt,
-        "transcribe_result",
-        lambda url: rt.TranscriptionResult(
+        "transcribe_final",
+        lambda url: rt.FinalTranscriptDecision(
+            status="accepted",
             text=f"text for {url}",
-            metadata={**rt.TRANSCRIPT_METADATA, "status": "accepted"},
+            reason=None,
+            metadata=_current_metadata("accepted"),
         ),
     )
 
@@ -359,6 +428,184 @@ def test_enrich_fixture_restores_order_after_event_id_changes(tmp_path, monkeypa
 
     got = load_jsonl(fx.read_text())
     assert got == sorted(got, key=lambda item: (item.session_time_ms, item.event_id))
+
+
+def _current_metadata(status: str) -> dict:
+    metadata = {
+        "model": "medium",
+        "profile": "medium-int8-word-timestamps-v1",
+        "policy": "f1-confidence-gate-v1",
+        "version": 3,
+        "status": status,
+    }
+    if status == "rejected":
+        metadata["reason"] = "low_log_probability"
+    return metadata
+
+
+def _write_radio_fixture(tmp_path, payloads) -> Path:
+    path = tmp_path / "radio.jsonl"
+    events = [
+        event(
+            "s", "RaceControlMessage", index, "HAM", category="Radio",
+            audio_url=f"https://provider.test/{index}.mp3", **payload,
+        )
+        for index, payload in enumerate(payloads)
+    ]
+    path.write_text(dump_jsonl(events), encoding="utf-8")
+    return path
+
+
+def test_enrich_fixture_reuses_current_accepted_and_preserves_manual_text(
+    tmp_path, monkeypatch,
+) -> None:
+    path = _write_radio_fixture(tmp_path, [
+        {"transcript": "  Manual text\n\t unchanged.  "},
+        {"transcript": "Box this lap.", "transcript_metadata": _current_metadata("accepted")},
+        {"transcript_metadata": _current_metadata("rejected")},
+    ])
+    original = load_jsonl(path.read_text())
+    monkeypatch.setattr(
+        rt, "transcribe_final", lambda _url: pytest.fail("terminal text must be reused"),
+    )
+
+    assert rt.enrich_fixture(path) == 0
+    assert load_jsonl(path.read_text()) == original
+
+
+def test_enrich_fixture_reprocesses_old_policy(tmp_path, monkeypatch) -> None:
+    metadata = {**_current_metadata("accepted"), "policy": "older-confidence-policy"}
+    path = _write_radio_fixture(tmp_path, [
+        {"transcript": "Old machine text.", "transcript_metadata": metadata},
+    ])
+    _stub_transcription(monkeypatch, _Segment("Box this lap.", -0.42, 0.03, 1.2))
+
+    assert rt.enrich_fixture(path) == 1
+    payload = load_jsonl(path.read_text())[0].payload
+    assert payload["transcript"] == "Box this lap."
+    assert payload["transcript_metadata"]["policy"] == "f1-confidence-gate-v1"
+
+
+def test_enrich_fixture_deferred_preserves_old_text_and_checkpoints_terminal_clips(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    old = {
+        "transcript": "Old machine text.",
+        "transcript_metadata": {"model": "medium", "profile": "current-medium-int8", "version": 1},
+    }
+    path = _write_radio_fixture(tmp_path, [old, {}])
+    original = load_jsonl(path.read_text())
+    calls = []
+
+    def transcribe(url):
+        calls.append(url)
+        if url.endswith("/0.mp3"):
+            return rt.FinalTranscriptDecision("deferred", None, "processing_failed", {})
+        return rt.FinalTranscriptDecision(
+            "accepted", "New private text.", None, _current_metadata("accepted"),
+        )
+
+    monkeypatch.setattr(rt, "transcribe_final", transcribe)
+
+    with pytest.raises(rt.IncompleteTranscriptionError, match="1.*deferred"):
+        rt.enrich_fixture(path)
+    saved = load_jsonl(path.read_text())
+    assert saved[0] == original[0]
+    assert saved[1].payload["transcript"] == "New private text."
+    assert saved[1].event_id != original[1].event_id
+    assert saved[1].event_id == make_event_id(
+        "s", "RaceControlMessage", 1, "HAM", saved[1].payload,
+    )
+    with pytest.raises(rt.IncompleteTranscriptionError):
+        rt.enrich_fixture(path)
+    assert calls == [
+        "https://provider.test/0.mp3", "https://provider.test/1.mp3",
+        "https://provider.test/0.mp3",
+    ]
+    logs = capsys.readouterr().err
+    assert "New private text." not in logs
+    assert "https://provider.test" not in logs
+
+
+def test_cli_radio_transcribe_exits_nonzero_on_deferred(tmp_path, monkeypatch, capsys) -> None:
+    path = _write_radio_fixture(tmp_path, [{}])
+    original = path.read_bytes()
+    monkeypatch.setattr(
+        rt, "transcribe_final",
+        lambda _url: rt.FinalTranscriptDecision("deferred", None, "processing_failed", {}),
+    )
+    monkeypatch.setattr("sys.argv", ["racelens", "radio-transcribe", str(path)])
+
+    with pytest.raises(SystemExit) as exited:
+        cli.main()
+
+    assert exited.value.code == 1
+    assert path.read_bytes() == original
+    assert "deferred" in capsys.readouterr().err
+
+
+def test_summarize_fixture_counts_terminal_radio_only(tmp_path) -> None:
+    path = _write_radio_fixture(tmp_path, [
+        {"transcript": "  Manual text\n unchanged.  "},
+        {"transcript": "Box.", "transcript_metadata": _current_metadata("accepted")},
+        {"transcript_metadata": _current_metadata("rejected")},
+        {"transcript": "Pit.", "transcript_metadata": _current_metadata("accepted")},
+    ])
+    path.write_text(
+        path.read_text() + dump_jsonl([event("s", "PitIn", 5, "HAM")]), encoding="utf-8",
+    )
+
+    assert rt.summarize_fixture(path).to_manifest() == {
+        "profile": "medium-int8-word-timestamps-v1",
+        "policy": "f1-confidence-gate-v1",
+        "total": 4,
+        "accepted": 2,
+        "rejected": 1,
+        "manual": 1,
+    }
+
+
+@pytest.mark.parametrize("payload", [
+    {"transcript_metadata": "not metadata"},
+    {"transcript_metadata": {}},
+    {"transcript": "Box.", "transcript_metadata": {"status": "accepted"}},
+    {"transcript_metadata": _current_metadata("accepted")},
+    {"transcript": "Box.", "transcript_metadata": _current_metadata("rejected")},
+    {"transcript_metadata": _current_metadata("deferred")},
+    {"transcript": 42},
+])
+def test_summarize_fixture_rejects_malformed_metadata(tmp_path, payload) -> None:
+    path = _write_radio_fixture(tmp_path, [payload])
+
+    with pytest.raises(ValueError):
+        rt.summarize_fixture(path)
+
+
+@pytest.mark.parametrize("payload", [
+    {},
+    {"transcript": "Old text.", "transcript_metadata": {
+        "model": "medium", "profile": "current-medium-int8", "version": 1,
+    }},
+    {"transcript_metadata": {**_current_metadata("rejected"), "policy": "older-policy"}},
+])
+def test_summarize_fixture_rejects_incomplete_provenance(tmp_path, payload) -> None:
+    path = _write_radio_fixture(tmp_path, [payload])
+
+    with pytest.raises(ValueError):
+        rt.summarize_fixture(path)
+
+
+def test_enrich_fixture_rejects_ambiguous_ownership_before_transcribing(
+    tmp_path, monkeypatch,
+) -> None:
+    path = _write_radio_fixture(tmp_path, [{}, {"transcript_metadata": {"status": "accepted"}}])
+    original = path.read_bytes()
+    monkeypatch.setattr(rt, "transcribe_final", lambda _url: pytest.fail("validate before inference"))
+
+    with pytest.raises(ValueError):
+        rt.enrich_fixture(path)
+
+    assert path.read_bytes() == original
 
 
 def test_live_worker_close_waits_and_releases_model(monkeypatch) -> None:
