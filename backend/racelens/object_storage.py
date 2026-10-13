@@ -44,6 +44,10 @@ class StorageError(RuntimeError):
     """A storage operation failed without exposing provider details."""
 
 
+class ObjectContentError(StorageError):
+    """A stored object violates its declared bounds or content contract."""
+
+
 class ManifestError(ValueError):
     """A remote archive manifest is unsafe or inconsistent."""
 
@@ -172,6 +176,25 @@ class S3Store:
         except Exception as exc:
             raise StorageError("object storage listing failed") from exc
 
+    def list_common_prefixes(self, prefix: str, *, limit: int = 1000) -> list[str]:
+        _safe_key(prefix.rstrip("/"))
+        if not prefix.endswith("/") or type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("prefix listing bounds are invalid")
+        try:
+            paginator = self.client.get_paginator("list_objects_v2")
+            prefixes: set[str] = set()
+            for page in paginator.paginate(
+                Bucket=self.bucket, Prefix=prefix, Delimiter="/",
+                PaginationConfig={"MaxItems": limit, "PageSize": limit},
+            ):
+                for row in page.get("CommonPrefixes", ()):
+                    prefixes.add(str(row["Prefix"]))
+                    if len(prefixes) >= limit:
+                        return sorted(prefixes)
+            return sorted(prefixes)
+        except Exception as exc:
+            raise StorageError("object storage prefix listing failed") from exc
+
     def get_bytes(self, key: str, *, limit: int) -> bytes | None:
         _safe_key(key)
         try:
@@ -182,12 +205,15 @@ class S3Store:
             raise StorageError("object storage read failed") from exc
         body = response["Body"]
         try:
-            size = int(response.get("ContentLength", -1))
+            try:
+                size = int(response.get("ContentLength", -1))
+            except (TypeError, ValueError) as exc:
+                raise ObjectContentError("object size is invalid") from exc
             if size < 0 or size > limit:
-                raise StorageError("object exceeds the configured size limit")
+                raise ObjectContentError("object exceeds the configured size limit")
             data = body.read(limit + 1)
-            if len(data) != size or len(data) > limit:
-                raise StorageError("object changed during download")
+            if not isinstance(data, bytes) or len(data) != size or len(data) > limit:
+                raise ObjectContentError("object changed during download")
             return data
         except StorageError:
             raise
@@ -203,9 +229,9 @@ class S3Store:
         try:
             value = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise StorageError("stored JSON is invalid") from exc
+            raise ObjectContentError("stored JSON is invalid") from exc
         if not isinstance(value, dict):
-            raise StorageError("stored JSON is not an object")
+            raise ObjectContentError("stored JSON is not an object")
         return value
 
     def put_json(self, key: str, value: dict) -> None:
