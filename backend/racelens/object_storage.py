@@ -20,8 +20,11 @@ from racelens.preparations import QueueFullError, SESSION_ID
 from racelens.race_control import legacy_session_status
 
 SCHEMA_VERSION = 1
+ARCHIVE_SCHEMA_V1 = 1
+ARCHIVE_SCHEMA_V2 = 2
 REPLAY_ID = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_RADIO_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 ARCHIVE_FILES = {
     "events.jsonl": ".jsonl",
     "track.json": ".track.json",
@@ -352,7 +355,12 @@ def _file_digest(path: Path) -> tuple[int, str]:
 
 
 def validate_manifest(value: object) -> dict:
-    if not isinstance(value, dict) or set(value) != {
+    if not isinstance(value, dict):
+        raise ManifestError("manifest fields are invalid")
+    version = value.get("schema_version")
+    if type(version) is not int or version not in {ARCHIVE_SCHEMA_V1, ARCHIVE_SCHEMA_V2}:
+        raise ManifestError("manifest schema is invalid")
+    fields = {
         "schema_version",
         "canonical_session_id",
         "replay_session_id",
@@ -361,7 +369,10 @@ def validate_manifest(value: object) -> dict:
         "event_count",
         "terminal_status",
         "files",
-    }:
+    }
+    if version == ARCHIVE_SCHEMA_V2:
+        fields |= {"revision", "parent_revision", "radio_profile", "radio_policy", "radio_summary"}
+    if set(value) != fields:
         raise ManifestError("manifest fields are invalid")
     canonical = value["canonical_session_id"]
     replay = value["replay_session_id"]
@@ -369,7 +380,7 @@ def validate_manifest(value: object) -> dict:
         raise ManifestError("manifest canonical session ID is invalid")
     if not isinstance(replay, str) or not REPLAY_ID.fullmatch(replay):
         raise ManifestError("manifest replay session ID is invalid")
-    if value["schema_version"] != SCHEMA_VERSION or value["terminal_status"] != "ready":
+    if value["terminal_status"] != "ready":
         raise ManifestError("manifest schema or terminal status is invalid")
     if (
         not isinstance(value["source"], str)
@@ -383,12 +394,28 @@ def validate_manifest(value: object) -> dict:
         _parsed_time(value["created_at"])
     except ValueError as exc:
         raise ManifestError("manifest timestamp is invalid") from exc
+    prefix = f"sessions/{replay}"
+    if version == ARCHIVE_SCHEMA_V2:
+        revision = value["revision"]
+        parent = value["parent_revision"]
+        if (
+            not isinstance(revision, str) or not SHA256.fullmatch(revision)
+            or (parent is not None and (not isinstance(parent, str) or not SHA256.fullmatch(parent)))
+        ):
+            raise ManifestError("manifest revision is invalid")
+        summary = value["radio_summary"]
+        if not isinstance(summary, dict) or set(summary) != {"total", "accepted", "rejected", "manual"}:
+            raise ManifestError("manifest radio summary fields are invalid")
+        _validate_radio_summary({
+            **summary, "profile": value["radio_profile"], "policy": value["radio_policy"],
+        }, event_count=value["event_count"])
+        prefix += f"/revisions/{revision}"
     files = value["files"]
     if not isinstance(files, dict) or set(files) != set(ARCHIVE_FILES):
         raise ManifestError("manifest archive file set is invalid")
     total = 0
     for name, row in files.items():
-        expected_key = f"sessions/{replay}/{name}"
+        expected_key = f"{prefix}/{name}"
         if (
             not isinstance(row, dict)
             or set(row) != {"key", "size", "sha256"}
@@ -404,6 +431,51 @@ def validate_manifest(value: object) -> dict:
     if total > MAX_SESSION_BYTES:
         raise ManifestError("manifest session exceeds the configured size limit")
     return value
+
+
+def _validate_radio_summary(value: object, *, event_count: int | None = None) -> dict:
+    if not isinstance(value, dict) or set(value) != {
+        "profile", "policy", "total", "accepted", "rejected", "manual",
+    }:
+        raise ManifestError("manifest radio summary fields are invalid")
+    if any(
+        not isinstance(value[key], str) or not _RADIO_IDENTIFIER.fullmatch(value[key])
+        for key in ("profile", "policy")
+    ) or any(type(value[key]) is not int or not 0 <= value[key] <= 100
+             for key in ("total", "accepted", "rejected", "manual")):
+        raise ManifestError("manifest radio summary is invalid")
+    if (
+        value["accepted"] + value["rejected"] + value["manual"] != value["total"]
+        or (event_count is not None and value["total"] > event_count)
+    ):
+        raise ManifestError("manifest radio counts are inconsistent")
+    return value
+
+
+def manifest_digest(manifest: dict) -> str:
+    payload = json.dumps(validate_manifest(manifest), separators=(",", ":"), sort_keys=True).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def archive_revision(files: dict, radio_summary: dict) -> str:
+    summary = _validate_radio_summary(radio_summary)
+    if not isinstance(files, dict) or set(files) != set(ARCHIVE_FILES):
+        raise ManifestError("manifest archive file set is invalid")
+    content = {}
+    for name, row in files.items():
+        if (
+            not isinstance(row, dict)
+            or type(row.get("size")) is not int
+            or not 0 < row["size"] <= MAX_OBJECT_BYTES
+            or not isinstance(row.get("sha256"), str)
+            or not SHA256.fullmatch(row["sha256"])
+        ):
+            raise ManifestError(f"manifest entry is invalid: {name}")
+        content[name] = {"size": row["size"], "sha256": row["sha256"]}
+    payload = {
+        "files": content, "radio_profile": summary["profile"], "radio_policy": summary["policy"],
+    }
+    return hashlib.sha256(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()).hexdigest()
 
 
 def manifest_key(replay_session_id: str) -> str:
@@ -1123,6 +1195,95 @@ def write_live_status(
     return updated
 
 
+def publish_archive_revision(
+    store: Any,
+    current_manifest: dict,
+    fixture_path: Path,
+    track_path: Path,
+    positions_path: Path,
+    *,
+    event_count: int,
+    radio_summary: dict,
+) -> dict:
+    current = validate_manifest(current_manifest)
+    return _publish_archive_revision(
+        store, current, current, fixture_path, track_path, positions_path,
+        event_count=event_count, radio_summary=radio_summary,
+    )
+
+
+def _publish_archive_revision(
+    store: Any,
+    metadata: dict,
+    current: dict | None,
+    fixture_path: Path,
+    track_path: Path,
+    positions_path: Path,
+    *,
+    event_count: int,
+    radio_summary: dict,
+) -> dict:
+    summary = _validate_radio_summary(radio_summary, event_count=event_count)
+    replay = metadata["replay_session_id"]
+    key = manifest_key(replay)
+    expected = manifest_digest(current) if current is not None else None
+
+    def check_parent() -> None:
+        latest = store.get_json(key, limit=MAX_MANIFEST_BYTES)
+        actual = manifest_digest(latest) if latest is not None else None
+        if actual != expected:
+            raise ManifestError("archive source manifest conflict")
+
+    paths = {
+        "events.jsonl": Path(fixture_path), "track.json": Path(track_path),
+        "positions.json": Path(positions_path),
+    }
+    files = {}
+    for name, path in paths.items():
+        size, digest = _file_digest(path)
+        files[name] = {"size": size, "sha256": digest}
+    revision = archive_revision(files, summary)
+    for name, row in files.items():
+        row["key"] = f"sessions/{replay}/revisions/{revision}/{name}"
+    manifest = validate_manifest({
+        "schema_version": ARCHIVE_SCHEMA_V2,
+        "canonical_session_id": metadata["canonical_session_id"],
+        "replay_session_id": replay,
+        "source": metadata["source"],
+        "created_at": _now(),
+        "event_count": event_count,
+        "terminal_status": "ready",
+        "files": files,
+        "revision": revision,
+        "parent_revision": current.get("revision", expected) if current is not None else None,
+        "radio_profile": summary["profile"],
+        "radio_policy": summary["policy"],
+        "radio_summary": {name: summary[name] for name in ("total", "accepted", "rejected", "manual")},
+    })
+    check_parent()
+    if current is not None and current.get("revision") == revision:
+        if any(current[field] != manifest[field] for field in (
+            "files", "event_count", "radio_profile", "radio_policy", "radio_summary",
+        )):
+            raise ManifestError("archive revision metadata differs")
+        for row in current["files"].values():
+            store.verify(row["key"], size=row["size"], sha256=row["sha256"])
+        return current
+    for name, row in files.items():
+        if not store.matches(row["key"], size=row["size"], sha256=row["sha256"]):
+            store.upload_file(row["key"], paths[name], sha256=row["sha256"])
+        store.verify(row["key"], size=row["size"], sha256=row["sha256"])
+    check_parent()
+    store.put_json(key, manifest)
+    stored = store.get_json(key, limit=MAX_MANIFEST_BYTES)
+    if stored != manifest:
+        raise StorageError("published manifest read-back mismatch")
+    validate_manifest(stored)
+    for row in stored["files"].values():
+        store.verify(row["key"], size=row["size"], sha256=row["sha256"])
+    return stored
+
+
 def publish_session(
     store: Any,
     canonical_session_id: str,
@@ -1133,6 +1294,7 @@ def publish_session(
     *,
     event_count: int,
     source: str = "fastf1",
+    radio_summary: dict | None = None,
 ) -> dict:
     """Upload, read-verify, copy, then publish the final manifest last."""
     if not SESSION_ID.fullmatch(canonical_session_id):
@@ -1153,7 +1315,7 @@ def publish_session(
             "sha256": digest,
         }
     manifest = validate_manifest({
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": ARCHIVE_SCHEMA_V1,
         "canonical_session_id": canonical_session_id,
         "replay_session_id": replay_session_id,
         "source": source,
@@ -1168,8 +1330,19 @@ def publish_session(
         )
     except ManifestError:
         current = None
+    if radio_summary is not None:
+        if current is not None and current.get("revision") != archive_revision(files, radio_summary):
+            raise ManifestError("a different ready archive already uses this replay ID")
+        return _publish_archive_revision(
+            store, manifest, current, fixture_path, track_path, positions_path,
+            event_count=event_count, radio_summary=radio_summary,
+        )
     if current is not None:
-        if current["files"] != manifest["files"] or current["event_count"] != event_count:
+        same_content = all(
+            current["files"][name][field] == row[field]
+            for name, row in files.items() for field in ("size", "sha256")
+        )
+        if not same_content or current["event_count"] != event_count:
             raise ManifestError("a different ready archive already uses this replay ID")
         return current
 
@@ -1588,9 +1761,7 @@ class RemoteSessionCache:
         if not REPLAY_ID.fullmatch(replay_session_id):
             raise ValueError("invalid replay session ID")
         manifest = load_manifest(self.store, replay_session_id)
-        marker = hashlib.sha256(
-            json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode()
-        ).hexdigest()
+        marker = manifest_digest(manifest)
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         target = self.directory / replay_session_id
         ready = target / ".manifest-sha256"
