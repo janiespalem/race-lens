@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from racelens.object_storage import publish_session
+from racelens.events.models import dump_jsonl, event
 from racelens.insights.passes import KIND_ON_TRACK, Pass
+from racelens.radio.archive_maintenance import MaintenanceBudget, MaintenanceResult
+from racelens.radio.models import CURRENT_RADIO_POLICY, CURRENT_RADIO_PROFILE, FinalTranscriptDecision
 from racelens.recorder.preparation import PreparationOutcome
 from racelens.recorder.schedule import ScheduledSession
 from racelens.recorder.worker import Config, Recorder, fixture_stem
@@ -55,6 +58,16 @@ class FakePreparationRunner:
     def close(self):
         self.closed = True
         self.stop("coordinator stopped")
+
+
+class FakeRadioMaintainer:
+    def __init__(self, result=None):
+        self.result = result or MaintenanceResult("idle")
+        self.budgets = []
+
+    def run_once(self, budget):
+        self.budgets.append(budget)
+        return self.result
 
 
 def _config(tmp_path, publish=frozenset({"R"})):
@@ -149,6 +162,360 @@ def test_config_publishes_every_session_type_by_default(tmp_path, monkeypatch):
     assert Config.from_env().publish_sessions == frozenset(
         {"FP1", "FP2", "FP3", "Q", "SQ", "Sprint", "R"}
     )
+
+
+def test_radio_maintenance_defaults_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("RACELENS_RECORDER_DATA", str(tmp_path))
+    monkeypatch.delenv("RECORDER_RADIO_MAINTENANCE", raising=False)
+
+    assert Config.from_env().radio_maintenance_mode == "off"
+
+
+@pytest.mark.parametrize("mode", ["off", "dry-run", "enabled"])
+@pytest.mark.parametrize("transcribe", ["0", "1"])
+def test_radio_maintenance_mode_is_independent_from_transcription(
+    tmp_path, monkeypatch, mode, transcribe,
+):
+    monkeypatch.setenv("RACELENS_RECORDER_DATA", str(tmp_path))
+    monkeypatch.setenv("RECORDER_RADIO_MAINTENANCE", mode)
+    monkeypatch.setenv("RECORDER_TRANSCRIBE_RADIO", transcribe)
+
+    config = Config.from_env()
+
+    assert config.radio_maintenance_mode == mode
+    assert config.transcribe_radio is (transcribe == "1")
+
+
+@pytest.mark.parametrize("mode", ["", "true", "ENABLED", " dry-run", "enabled "])
+def test_radio_maintenance_rejects_unknown_mode(tmp_path, monkeypatch, mode):
+    monkeypatch.setenv("RACELENS_RECORDER_DATA", str(tmp_path))
+    monkeypatch.setenv("RECORDER_RADIO_MAINTENANCE", mode)
+
+    with pytest.raises(ValueError, match="RECORDER_RADIO_MAINTENANCE"):
+        Config.from_env()
+
+
+@pytest.mark.parametrize(("mode", "publish"), [("dry-run", False), ("enabled", True)])
+def test_radio_maintenance_constructs_durable_adapter(tmp_path, mode, publish):
+    from racelens.radio.archive_maintenance import RadioArchiveMaintainer
+    from racelens.radio.transcribe import transcribe_final
+
+    storage = MemoryStore()
+    recorder = Recorder(
+        replace(_config(tmp_path), radio_maintenance_mode=mode), object_store=storage,
+    )
+
+    assert isinstance(recorder.radio_maintainer, RadioArchiveMaintainer)
+    assert recorder.radio_maintainer.store is storage
+    assert recorder.radio_maintainer.workspace.is_relative_to(recorder.config.state_dir)
+    assert recorder.radio_maintainer.transcribe is transcribe_final
+    assert recorder.radio_maintainer.publish is publish
+
+
+@pytest.mark.parametrize("mode", ["off", "enabled"])
+def test_radio_maintenance_requires_storage_and_non_off_mode(tmp_path, monkeypatch, mode):
+    monkeypatch.setattr("racelens.recorder.worker.StorageConfig.from_env", lambda: None)
+    recorder = Recorder(
+        replace(_config(tmp_path), radio_maintenance_mode=mode),
+        object_store=MemoryStore() if mode == "off" else None,
+    )
+
+    assert recorder.radio_maintainer is None
+
+
+@pytest.mark.parametrize(
+    "work",
+    ["capture", "recording", "capture_retry", "guard", "captured", "processing_retry",
+     "preparation_outcome", "remote"],
+)
+def test_radio_maintenance_yields_to_higher_priority_work(tmp_path, monkeypatch, work):
+    now = datetime(2026, 7, 19, 15, tzinfo=UTC)
+    session = replace(SESSION, starts_at=now - timedelta(hours=4))
+    if work == "capture":
+        session = replace(session, starts_at=now)
+    elif work == "guard":
+        session = replace(session, starts_at=now + timedelta(hours=3))
+    maintainer = FakeRadioMaintainer()
+    runner = FakePreparationRunner()
+    recorder = Recorder(
+        replace(_config(tmp_path), radio_maintenance_mode="enabled"),
+        now=lambda: now, object_store=MemoryStore(), preparation_runner=runner,
+        radio_maintainer=maintainer,
+    )
+    monkeypatch.setattr("racelens.recorder.worker.load_fastf1_schedule", lambda _year: [session])
+    captures, requested = [], []
+    monkeypatch.setattr(recorder, "capture", lambda item: captures.append(item.session_id))
+    monkeypatch.setattr(
+        recorder, "process_requested", lambda item, _replay: requested.append(item.session_id),
+    )
+    if work in {"recording", "capture_retry", "captured", "processing_retry",
+                "preparation_outcome"}:
+        recorder.store.transition(session.session_id, Phase.RECORDING, now)
+    if work in {"captured", "processing_retry", "preparation_outcome"}:
+        recorder.store.transition(session.session_id, Phase.CAPTURED, now)
+    if work in {"processing_retry", "preparation_outcome"}:
+        recorder.store.transition(session.session_id, Phase.PROCESSING, now)
+    if work in {"capture_retry", "processing_retry"}:
+        recorder.store.transition(
+            session.session_id, Phase.FAILED, now, error="retry required", retry_at=now,
+        )
+    if work == "preparation_outcome":
+        runner.outcome = PreparationOutcome(session.session_id, None)
+    if work == "remote":
+        recorder.remote_queue.enqueue(session.session_id, fixture_stem(session))
+
+    result = recorder.run_once()
+
+    assert maintainer.budgets == []
+    if work in {"capture", "recording", "capture_retry"}:
+        assert result == f"captured: {session.session_id}"
+        assert captures == [session.session_id]
+    elif work == "guard":
+        assert result.endswith("(approaching)")
+    elif work in {"captured", "processing_retry"}:
+        assert result == f"processing started: {session.session_id}"
+        assert runner.starts == [session.session_id]
+    elif work == "preparation_outcome":
+        assert result == f"complete: {session.session_id}"
+    else:
+        assert result == f"requested archive complete: {session.session_id}"
+        assert requested == [session.session_id]
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "enabled"])
+def test_idle_radio_maintenance_uses_bounded_pass_before_awards(tmp_path, monkeypatch, mode):
+    now = datetime(2026, 7, 19, 15, tzinfo=UTC)
+    session = replace(SESSION, starts_at=now + timedelta(hours=3, seconds=1))
+    maintainer = FakeRadioMaintainer(MaintenanceResult(
+        "published", "belgian_2026_race", 3, 2, 1, 1, 2,
+    ))
+    recorder = Recorder(
+        replace(_config(tmp_path), radio_maintenance_mode=mode), now=lambda: now,
+        object_store=MemoryStore(), radio_maintainer=maintainer,
+        preparation_runner=FakePreparationRunner(),
+    )
+    monkeypatch.setattr("racelens.recorder.worker.load_fastf1_schedule", lambda _year: [session])
+    awards = []
+    monkeypatch.setattr(recorder, "_sync_completed_awards", lambda _sessions: awards.append(True))
+
+    result = recorder.run_once()
+
+    assert maintainer.budgets == [MaintenanceBudget(1, 3, 60.0)]
+    assert result == (
+        "radio maintenance published: belgian_2026_race "
+        "scanned=3 processed=2 reused=1 accepted=1 rejected=2"
+    )
+    assert awards == []
+
+
+def test_idle_radio_maintenance_allows_lower_priority_awards(tmp_path, monkeypatch):
+    now = SESSION.capture_until + timedelta(days=1)
+    maintainer = FakeRadioMaintainer()
+    recorder = Recorder(
+        replace(_config(tmp_path), radio_maintenance_mode="enabled"), now=lambda: now,
+        object_store=MemoryStore(), radio_maintainer=maintainer,
+        preparation_runner=FakePreparationRunner(),
+    )
+    monkeypatch.setattr("racelens.recorder.worker.load_fastf1_schedule", lambda _year: [SESSION])
+    award_budgets = []
+    monkeypatch.setattr(
+        recorder, "_sync_completed_awards",
+        lambda _sessions: award_budgets.append(list(maintainer.budgets)),
+    )
+
+    assert recorder.run_once() == "idle"
+    assert maintainer.budgets == [MaintenanceBudget(1, 3, 60.0)]
+    assert award_budgets == [[MaintenanceBudget(1, 3, 60.0)]]
+
+
+def test_off_radio_maintenance_never_invokes_injected_adapter(tmp_path, monkeypatch):
+    maintainer = FakeRadioMaintainer()
+    recorder = Recorder(
+        _config(tmp_path), now=lambda: SESSION.capture_until + timedelta(days=1),
+        object_store=MemoryStore(), radio_maintainer=maintainer,
+        preparation_runner=FakePreparationRunner(),
+    )
+    monkeypatch.setattr("racelens.recorder.worker.load_fastf1_schedule", lambda _year: [SESSION])
+
+    assert recorder.run_once() == "idle"
+    assert maintainer.budgets == []
+
+
+@pytest.mark.parametrize("replay", [None, "bad\ntranscript text", "https://audio.example/secret"])
+def test_radio_maintenance_status_sanitizes_replay_identity(tmp_path, monkeypatch, replay):
+    maintainer = FakeRadioMaintainer(MaintenanceResult("quarantined", replay))
+    recorder = Recorder(
+        replace(_config(tmp_path), radio_maintenance_mode="enabled"),
+        now=lambda: SESSION.capture_until + timedelta(days=1),
+        object_store=MemoryStore(), radio_maintainer=maintainer,
+        preparation_runner=FakePreparationRunner(),
+    )
+    monkeypatch.setattr("racelens.recorder.worker.load_fastf1_schedule", lambda _year: [SESSION])
+
+    assert recorder.run_once() == (
+        "radio maintenance quarantined: - scanned=0 processed=0 reused=0 accepted=0 rejected=0"
+    )
+
+
+def _archive_commands(recorder, session, monkeypatch, *, deferred=False):
+    from racelens.radio.transcribe import enrich_fixture
+
+    replay = fixture_stem(session)
+    paths = recorder._paths(session)
+    paths["clean"].touch()
+    laps = [
+        event(replay, "LapCompleted", lap * 60_000, driver, lap=lap)
+        for lap in range(1, 4) for driver in ("VER", "HAM")
+    ]
+    radio = [
+        event(replay, "RaceControlMessage", 1000, "VER", category="Radio",
+              audio_url="https://audio.example/accepted"),
+        event(replay, "RaceControlMessage", 2000, "HAM", category="Radio",
+              audio_url="https://audio.example/rejected"),
+        event(replay, "RaceControlMessage", 3000, "VER", category="Radio",
+              audio_url="https://audio.example/manual", transcript="  Manual text  "),
+    ]
+    inference = []
+
+    def transcribe(url):
+        inference.append(url)
+        if deferred:
+            return FinalTranscriptDecision("deferred", None, "processing_failed", {})
+        accepted = url.endswith("accepted")
+        status, reason = ("accepted", None) if accepted else ("rejected", "low_confidence_words")
+        return FinalTranscriptDecision(
+            status, "Box this lap" if accepted else None, reason,
+            {"profile": CURRENT_RADIO_PROFILE, "policy": CURRENT_RADIO_POLICY,
+             "status": status, "reason": reason},
+        )
+
+    monkeypatch.setattr("racelens.radio.transcribe.transcribe_final", transcribe)
+    commands = []
+
+    def run(argv, **_kwargs):
+        commands.append(argv)
+        if "ingest" in argv:
+            rows = sorted(laps + radio, key=lambda row: (row.session_time_ms, row.event_id))
+            paths["fixture"].write_text(dump_jsonl(rows), encoding="utf-8")
+        elif "ingest-live" in argv:
+            paths["provisional"].write_text(dump_jsonl(radio), encoding="utf-8")
+        elif "radio-transcribe" in argv:
+            enrich_fixture(paths["fixture"])
+        elif "track" in argv:
+            paths["track"].write_text(json.dumps({
+                "session_id": replay, "points": [[0, 0], [1, 1]],
+                "progress_points": [[0, 0], [1, 1]], "viewbox": [600, 400],
+            }), encoding="utf-8")
+        elif argv[0] == str(recorder.config.race_core):
+            paths["positions"].write_text(json.dumps({
+                "session_id": replay, "tick_ms": 1000, "viewbox": [600, 400],
+                "drivers": {"VER": [[0, 0]] * 300}, "progress": {"VER": [0.0] * 300},
+            }), encoding="utf-8")
+
+    monkeypatch.setattr(recorder, "_run", run)
+    return inference, commands
+
+
+@pytest.mark.parametrize(
+    ("transcribe", "captured", "schema"), [(True, True, 2), (False, True, 1), (True, False, 1)],
+)
+def test_initial_archive_radio_publication_provenance(
+    tmp_path, monkeypatch, transcribe, captured, schema,
+):
+    from racelens.radio.archive_maintenance import RadioArchiveMaintainer
+
+    class ArchiveStore(MemoryStore):
+        def list_common_prefixes(self, prefix, *, limit=1000):
+            return sorted({
+                prefix + key[len(prefix):].split("/", 1)[0] + "/"
+                for key in self.list_keys(prefix, limit=limit)
+            })
+
+    storage = ArchiveStore()
+    session = replace(SESSION, kind="Q")
+    recorder = Recorder(
+        replace(_config(tmp_path, frozenset({"Q"})), transcribe_radio=transcribe,
+                git_publication=False), object_store=storage,
+    )
+    inference, commands = _archive_commands(recorder, session, monkeypatch)
+    publication_summaries = []
+
+    def publish(*args, **kwargs):
+        publication_summaries.append(kwargs.get("radio_summary"))
+        return publish_session(*args, **kwargs)
+
+    monkeypatch.setattr("racelens.recorder.worker.publish_session", publish)
+
+    if captured:
+        recorder.process(session)
+    else:
+        recorder.process_requested(session, fixture_stem(session))
+
+    manifest = storage.objects[f"sessions/{fixture_stem(session)}/manifest.json"]
+    assert manifest["schema_version"] == schema
+    assert manifest["event_count"] == 9
+    if schema == 2:
+        assert publication_summaries == [{
+            "profile": "medium-int8-word-timestamps-v1", "policy": "f1-confidence-gate-v1",
+            "total": 3, "accepted": 1, "rejected": 1, "manual": 1,
+        }]
+        assert manifest["radio_profile"] == "medium-int8-word-timestamps-v1"
+        assert manifest["radio_policy"] == "f1-confidence-gate-v1"
+        assert manifest["radio_summary"] == {"total": 3, "accepted": 1, "rejected": 1, "manual": 1}
+        assert manifest["parent_revision"] is None
+        assert len(inference) == 2
+        before = list(storage.operations)
+        maintainer = RadioArchiveMaintainer(
+            storage, tmp_path / "maintenance",
+            lambda _url: pytest.fail("a newly transcribed archive must not repeat inference"),
+        )
+        assert maintainer.run_once(MaintenanceBudget(1, 3, 60.0)).status == "idle"
+        assert storage.operations == before
+    else:
+        assert publication_summaries == [None]
+        assert "radio_profile" not in manifest
+        assert inference == []
+        assert not any("radio-transcribe" in command for command in commands)
+
+
+def test_deferred_initial_radio_transcription_never_publishes(tmp_path, monkeypatch):
+    from racelens.radio.transcribe import IncompleteTranscriptionError
+
+    storage = MemoryStore()
+    session = replace(SESSION, kind="Q")
+    recorder = Recorder(
+        replace(_config(tmp_path, frozenset({"Q"})), transcribe_radio=True,
+                git_publication=False), object_store=storage,
+    )
+    _archive_commands(recorder, session, monkeypatch, deferred=True)
+
+    with pytest.raises(IncompleteTranscriptionError):
+        recorder.process(session)
+
+    assert storage.operations == []
+
+
+def test_initial_radio_summary_requires_final_archive_validation(tmp_path, monkeypatch):
+    session = replace(SESSION, kind="Q")
+    storage = MemoryStore()
+    recorder = Recorder(
+        replace(_config(tmp_path, frozenset({"Q"})), transcribe_radio=True,
+                git_publication=False), object_store=storage,
+    )
+    _archive_commands(recorder, session, monkeypatch)
+    monkeypatch.setattr(
+        "racelens.recorder.worker.validate_archive",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("invalid archive")),
+    )
+    monkeypatch.setattr(
+        "racelens.radio.transcribe.summarize_fixture",
+        lambda _path: pytest.fail("summary must not certify an invalid archive"),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid archive"):
+        recorder.process(session)
+
+    assert storage.operations == []
 
 
 def test_running_preparation_is_preempted_when_capture_becomes_due(tmp_path, monkeypatch):

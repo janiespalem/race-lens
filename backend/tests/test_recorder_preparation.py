@@ -4,6 +4,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -309,3 +310,26 @@ def test_preparation_job_disables_coordinator_heartbeat(monkeypatch):
         ("config", {"owns_coordinator_heartbeat": False}),
         SESSION,
     ]
+
+
+def test_active_preparation_subprocess_prevents_radio_maintenance(tmp_path, monkeypatch):
+    from tests.test_object_storage import MemoryStore
+    from tests.test_recorder_worker import FakeRadioMaintainer, _config
+
+    runner, processes, _calls = make_runner(tmp_path / "runner")
+    maintainer = FakeRadioMaintainer()
+    recorder = Recorder(
+        replace(_config(tmp_path), radio_maintenance_mode="enabled"),
+        now=lambda: datetime(2026, 9, 27, tzinfo=UTC), object_store=MemoryStore(),
+        preparation_runner=runner, radio_maintainer=maintainer,
+    )
+    assert runner.start(SESSION)
+    monkeypatch.setattr("racelens.recorder.worker.load_fastf1_schedule", lambda _year: [SESSION])
+
+    try:
+        assert recorder.run_once() == f"processing: {SESSION.session_id}"
+        assert processes[0].poll() is None
+        assert maintainer.budgets == []
+    finally:
+        monkeypatch.setattr(os, "killpg", lambda _pid, _sig: None)
+        runner.close()
