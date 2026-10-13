@@ -17,6 +17,35 @@ from racelens.radio.evaluate import (
 )
 
 
+class _Segment:
+    def __init__(self, text, avg_logprob, no_speech_prob, compression_ratio):
+        self.text = text
+        self.avg_logprob = avg_logprob
+        self.no_speech_prob = no_speech_prob
+        self.compression_ratio = compression_ratio
+
+
+def _stub_transcription(monkeypatch, segment) -> None:
+    class Model:
+        @staticmethod
+        def transcribe(*_args, **_kwargs):
+            return [segment], None
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        @staticmethod
+        def read(_limit):
+            return b"audio"
+
+    monkeypatch.setattr(rt, "_model", lambda: Model())
+    monkeypatch.setattr(rt.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+
+
 def test_feed_carries_transcript() -> None:
     e = event(
         "s", "RaceControlMessage", 1000, "HAM",
@@ -57,6 +86,42 @@ def test_transcribe_rejects_oversized_radio_clip(monkeypatch) -> None:
     assert not model.called
 
 
+def test_transcribe_result_rejects_low_confidence_text(monkeypatch) -> None:
+    _stub_transcription(monkeypatch, _Segment(
+        "I feel softly licking between my feet.", -0.81, 0.12, 1.1,
+    ))
+
+    result = rt.transcribe_result("https://provider.test/radio.mp3")
+
+    assert result is not None
+    assert result.text is None
+    assert result.metadata["status"] == "rejected"
+    assert result.metadata["reason"] == "low_log_probability"
+    assert result.metadata["quality"]["min_avg_logprob"] == pytest.approx(-0.81)
+
+
+def test_transcribe_result_keeps_confident_text_and_diagnostics(monkeypatch) -> None:
+    _stub_transcription(monkeypatch, _Segment("Box this lap.", -0.42, 0.03, 1.2))
+
+    result = rt.transcribe_result("https://provider.test/radio.mp3")
+
+    assert result is not None
+    assert result.text == "Box this lap."
+    assert result.metadata == {
+        "model": "medium",
+        "profile": "current-medium-int8-quality-gated",
+        "version": 2,
+        "status": "accepted",
+        "quality": {
+            "segments": 1,
+            "min_avg_logprob": pytest.approx(-0.42),
+            "min_required_avg_logprob": -0.75,
+            "max_no_speech_prob": pytest.approx(0.03),
+            "max_compression_ratio": pytest.approx(1.2),
+        },
+    }
+
+
 def test_enrich_fixture_fills_and_skips(tmp_path, monkeypatch) -> None:
     fx = tmp_path / "r.jsonl"
     rows = [
@@ -76,21 +141,104 @@ def test_enrich_fixture_fills_and_skips(tmp_path, monkeypatch) -> None:
     ]
     fx.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
 
-    monkeypatch.setattr(rt, "transcribe", lambda url: f"text for {url}")
+    monkeypatch.setattr(
+        rt,
+        "transcribe_result",
+        lambda url: rt.TranscriptionResult(
+            text=f"text for {url}",
+            metadata={**rt.TRANSCRIPT_METADATA, "status": "accepted"},
+        ),
+    )
     assert rt.enrich_fixture(fx) == 1  # only the transcript-less radio event
 
     got = [json.loads(ln) for ln in fx.read_text().splitlines()]
     assert got[0]["payload"]["transcript"] == "text for https://x/1.mp3"
     assert got[0]["payload"]["transcript_metadata"] == {
         "model": "medium",
-        "profile": "current-medium-int8",
-        "version": 1,
+        "profile": "current-medium-int8-quality-gated",
+        "version": 2,
+        "status": "accepted",
     }
     assert got[1]["payload"]["transcript"] == "old"  # untouched
     assert "transcript" not in got[2]["payload"]
     assert got[0]["event_id"] == make_event_id(
         "s", "RaceControlMessage", 1, "HAM", got[0]["payload"]
     )
+
+
+def test_enrich_fixture_rechecks_old_machine_text_but_preserves_manual_text(
+    tmp_path, monkeypatch,
+) -> None:
+    fx = tmp_path / "r.jsonl"
+    rows = [
+        {"event_id": "a", "session_id": "s", "type": "RaceControlMessage",
+         "session_time_ms": 1, "driver_id": "ANT", "source": "fixture",
+         "confidence": "high",
+         "payload": {"category": "Radio", "message": "RADIO: ANT",
+                     "audio_url": "https://x/old-machine.mp3",
+                     "transcript": "I feel softly licking between my feet.",
+                     "transcript_metadata": {"model": "medium",
+                                             "profile": "current-medium-int8",
+                                             "version": 1}}},
+        {"event_id": "b", "session_id": "s", "type": "RaceControlMessage",
+         "session_time_ms": 2, "driver_id": "VER", "source": "fixture",
+         "confidence": "high",
+         "payload": {"category": "Radio", "message": "RADIO: VER",
+                     "audio_url": "https://x/manual.mp3", "transcript": "Manual text"}},
+    ]
+    fx.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    rejected = rt.TranscriptionResult(
+        text=None,
+        metadata={
+            "model": "medium",
+            "profile": "current-medium-int8-quality-gated",
+            "version": 2,
+            "status": "rejected",
+            "reason": "low_log_probability",
+        },
+    )
+    calls = []
+    monkeypatch.setattr(
+        rt,
+        "transcribe_result",
+        lambda url: calls.append(url) or rejected,
+    )
+
+    assert rt.enrich_fixture(fx) == 0
+
+    got = [json.loads(line) for line in fx.read_text().splitlines()]
+    assert calls == ["https://x/old-machine.mp3"]
+    assert "transcript" not in got[0]["payload"]
+    assert got[0]["payload"]["transcript_metadata"]["status"] == "rejected"
+    assert got[1]["payload"]["transcript"] == "Manual text"
+    assert "transcript_metadata" not in got[1]["payload"]
+
+
+def test_enrich_fixture_does_not_retry_current_rejection(tmp_path, monkeypatch) -> None:
+    fx = tmp_path / "r.jsonl"
+    row = {
+        "event_id": "a", "session_id": "s", "type": "RaceControlMessage",
+        "session_time_ms": 1, "driver_id": "ANT", "source": "fixture",
+        "confidence": "high",
+        "payload": {
+            "category": "Radio", "message": "RADIO: ANT",
+            "audio_url": "https://x/rejected.mp3",
+            "transcript_metadata": {
+                **rt.TRANSCRIPT_METADATA,
+                "status": "rejected",
+                "reason": "low_log_probability",
+            },
+        },
+    }
+    fx.write_text(json.dumps(row) + "\n")
+    monkeypatch.setattr(
+        rt,
+        "transcribe_result",
+        lambda _url: pytest.fail("current result must not be reprocessed"),
+    )
+
+    assert rt.enrich_fixture(fx) == 0
+    assert json.loads(fx.read_text())["payload"]["transcript_metadata"]["status"] == "rejected"
 
 
 def test_enrich_fixture_restores_order_after_event_id_changes(tmp_path, monkeypatch) -> None:
@@ -101,7 +249,14 @@ def test_enrich_fixture_restores_order_after_event_id_changes(tmp_path, monkeypa
     )
     other = event("s", "RaceControlMessage", 1, category="Other", message="5")
     fx.write_text(dump_jsonl(sorted([radio, other], key=lambda item: item.event_id)))
-    monkeypatch.setattr(rt, "transcribe", lambda url: f"text for {url}")
+    monkeypatch.setattr(
+        rt,
+        "transcribe_result",
+        lambda url: rt.TranscriptionResult(
+            text=f"text for {url}",
+            metadata={**rt.TRANSCRIPT_METADATA, "status": "accepted"},
+        ),
+    )
 
     rt.enrich_fixture(fx)
 
