@@ -209,9 +209,13 @@ def _cmd_radio_fetch(args: argparse.Namespace) -> None:
 
 
 def _cmd_radio_transcribe(args: argparse.Namespace) -> None:
-    from racelens.radio.transcribe import enrich_fixture
+    from racelens.radio.transcribe import IncompleteTranscriptionError, enrich_fixture
 
-    done = enrich_fixture(Path(args.fixture))
+    try:
+        done = enrich_fixture(Path(args.fixture))
+    except IncompleteTranscriptionError as exc:
+        print(f"radio-transcribe: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
     print(f"radio-transcribe: {done} transcripts → {args.fixture}", file=sys.stderr)
 
 

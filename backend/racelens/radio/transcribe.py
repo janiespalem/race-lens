@@ -24,6 +24,13 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from racelens.radio.models import (
+    CURRENT_RADIO_POLICY,
+    CURRENT_RADIO_PROFILE,
+    FinalTranscriptDecision,
+    RadioSummary,
+)
+
 MODEL_NAME = "medium"  # spike winner; large-v3-int8 was slower AND noisier
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
 TRANSCRIPT_METADATA = {
@@ -127,19 +134,112 @@ def _transcribe_result(
             text = "\n".join(segment.text.strip() for segment in segments).strip()
         return TranscriptionResult(text, metadata)
     except Exception as exc:  # network/codec hiccups must not kill the caller
-        print(f"radio transcribe failed for {url}: {exc}", file=sys.stderr)
+        if not inspect_words:
+            print(f"radio transcribe failed for {url}: {exc}", file=sys.stderr)
         return None
 
 
 def transcribe_result(url: str) -> TranscriptionResult | None:
-    """Build a word-confidence-gated result for durable replay publication."""
+    """Legacy word-confidence result; durable callers use transcribe_final()."""
     return _transcribe_result(url, inspect_words=True)
+
+
+def transcribe_final(url: str) -> FinalTranscriptDecision:
+    """Return a terminal quality decision or a retryable processing failure."""
+    metadata = {
+        **TRANSCRIPT_METADATA,
+        "profile": CURRENT_RADIO_PROFILE,
+        "policy": CURRENT_RADIO_POLICY,
+    }
+    try:
+        result = _transcribe_result(url, inspect_words=True)
+    except Exception:
+        result = None
+    if result is None:
+        metadata.update({"status": "deferred", "reason": "processing_failed"})
+        return FinalTranscriptDecision("deferred", None, "processing_failed", metadata)
+    metadata.update(result.metadata)
+    metadata["profile"] = CURRENT_RADIO_PROFILE
+    if result.text is None:
+        reason = metadata["reason"]
+        return FinalTranscriptDecision("rejected", None, reason, metadata)
+    return FinalTranscriptDecision("accepted", result.text, None, metadata)
 
 
 def transcribe(url: str) -> str | None:
     """Return a fast, segment-confidence-gated transcript for live mode."""
     result = _transcribe_result(url, inspect_words=False)
     return result.text if result is not None else None
+
+
+class IncompleteTranscriptionError(RuntimeError):
+    """A fixture still contains radio clips requiring retry."""
+
+
+def _radio_state(payload: dict[str, Any]) -> str:
+    text = payload.get("transcript")
+    if text is not None and not isinstance(text, str):
+        raise ValueError("invalid radio transcript")
+    metadata = payload.get("transcript_metadata")
+    if metadata is None:
+        return "manual" if text else "unprocessed"
+    if not isinstance(metadata, dict):
+        raise ValueError("invalid radio transcript metadata")
+    profile = metadata.get("profile")
+    policy = metadata.get("policy")
+    legacy_versions = {
+        "current-medium-int8": 1,
+        "current-medium-int8-quality-gated": 2,
+        "final-medium-int8-word-gated": 3,
+    }
+    legacy = (
+        isinstance(profile, str)
+        and profile in legacy_versions
+        and metadata.get("model") == MODEL_NAME
+        and type(metadata.get("version")) is int
+        and metadata["version"] == legacy_versions[profile]
+        and policy is None
+    )
+    if not legacy and not (
+        isinstance(profile, str) and profile
+        and isinstance(policy, str) and policy
+    ):
+        raise ValueError("invalid radio transcript provenance")
+    if "quality" in metadata and not isinstance(metadata["quality"], dict):
+        raise ValueError("invalid radio transcript quality")
+    status = metadata.get("status")
+    if legacy and metadata["version"] == 1 and status is None and text:
+        return "stale"
+    if status == "accepted":
+        if not text or metadata.get("reason") is not None:
+            raise ValueError("invalid accepted radio transcript")
+    elif status == "rejected":
+        reason = metadata.get("reason")
+        if text or not isinstance(reason, str) or not reason:
+            raise ValueError("invalid rejected radio transcript")
+    else:
+        raise ValueError("invalid radio transcript status")
+    if profile == CURRENT_RADIO_PROFILE and policy == CURRENT_RADIO_POLICY:
+        return status
+    return "stale"
+
+
+def summarize_fixture(path: Path) -> RadioSummary:
+    """Summarize only complete fixtures with current machine provenance."""
+    from racelens.events.models import load_jsonl
+
+    counts = {"accepted": 0, "rejected": 0, "manual": 0}
+    for item in load_jsonl(path.read_text(encoding="utf-8")):
+        if item.payload.get("category") != "Radio":
+            continue
+        state = _radio_state(item.payload)
+        if state not in counts:
+            raise ValueError("radio transcription is incomplete or stale")
+        counts[state] += 1
+    return RadioSummary(
+        CURRENT_RADIO_PROFILE, CURRENT_RADIO_POLICY,
+        sum(counts.values()), counts["accepted"], counts["rejected"], counts["manual"],
+    )
 
 
 class TranscriptWorker:
@@ -176,34 +276,35 @@ def enrich_fixture(path: Path) -> int:
     """Add payload["transcript"] to radio events of a fixture jsonl, in place.
 
     Preserves manual transcripts and rechecks machine transcripts from older profiles.
-    Returns the number of transcripts written.
+    Returns the number of transcripts written. Deferred clips raise
+    IncompleteTranscriptionError after terminal decisions are checkpointed.
     """
     import json
 
     from racelens.events.models import dump_jsonl, load_jsonl, make_event_id
     from racelens.recorder.postprocess import atomic_write_text
 
-    lines = path.read_text(encoding="utf-8").splitlines()
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    events = load_jsonl("\n".join(lines))
+    states = [
+        _radio_state(item.payload) if item.payload.get("category") == "Radio" else None
+        for item in events
+    ]
     done = 0
+    deferred = 0
+    changed = False
     for i, ln in enumerate(lines):
         e = json.loads(ln)
         p = e.get("payload", {})
         url = p.get("audio_url")
-        metadata = p.get("transcript_metadata")
-        current_machine_result = (
-            isinstance(metadata, dict)
-            and metadata.get("version") == TRANSCRIPT_METADATA["version"]
-            and metadata.get("profile") == TRANSCRIPT_METADATA["profile"]
-        )
-        manual_transcript = bool(p.get("transcript")) and metadata is None
-        if (
-            p.get("category") == "Radio"
-            and url
-            and not manual_transcript
-            and not current_machine_result
-        ):
-            result = transcribe_result(url)
-            if result is not None:
+        if states[i] in {"unprocessed", "stale"}:
+            if not url:
+                deferred += 1
+                continue
+            result = transcribe_final(url)
+            if result.status == "deferred":
+                deferred += 1
+            else:
                 p.pop("transcript", None)
                 p["transcript_metadata"] = result.metadata
                 if result.text:
@@ -214,12 +315,15 @@ def enrich_fixture(path: Path) -> int:
                     e.get("driver_id"), p,
                 )
                 lines[i] = json.dumps(e, ensure_ascii=False, separators=(",", ":"))
+                changed = True
                 # Write after every clip: a killed run keeps its progress and a
                 # re-run resumes from the first missing transcript.
                 atomic_write_text(path, "\n".join(lines) + "\n")
-                summary = result.text[:70] if result.text else result.metadata["reason"]
-                print(f"  {e.get('driver_id')}: {summary}", file=sys.stderr)
-    events = load_jsonl("\n".join(lines))
-    events.sort(key=lambda event_: (event_.session_time_ms, event_.event_id))
-    atomic_write_text(path, dump_jsonl(events))
+                print(f"  radio transcription: {result.status}", file=sys.stderr)
+    if changed or not deferred:
+        events = load_jsonl("\n".join(lines))
+        events.sort(key=lambda event_: (event_.session_time_ms, event_.event_id))
+        atomic_write_text(path, dump_jsonl(events))
+    if deferred:
+        raise IncompleteTranscriptionError(f"{deferred} radio clips deferred; retry required")
     return done
