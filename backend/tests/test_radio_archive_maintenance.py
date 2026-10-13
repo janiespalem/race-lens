@@ -847,6 +847,60 @@ def test_duplicate_completed_run_creates_zero_uploads(tmp_path):
     assert not transcriber.calls
 
 
+def test_cleanup_crash_then_storage_retry_preserves_completion_proof(tmp_path, monkeypatch):
+    import racelens.radio.archive_maintenance as maintenance
+
+    class FailingVerificationStore(MemoryStore):
+        fail = False
+
+        def verify(self, key, **kwargs):
+            if self.fail:
+                self.fail = False
+                raise StorageError("temporary verification outage")
+            super().verify(key, **kwargs)
+
+    store, transcriber = FailingVerificationStore(), ScriptedTranscriber()
+    add_publishable_archive(store)
+    current = datetime(2026, 10, 13, 12, tzinfo=UTC)
+    worker = RadioArchiveMaintainer(store, tmp_path, transcriber, now=lambda: current)
+    cleanup = maintenance.shutil.rmtree
+
+    def crash_after_cleanup(path):
+        cleanup(path)
+        raise SystemExit("crash after cleanup")
+
+    monkeypatch.setattr(maintenance.shutil, "rmtree", crash_after_cleanup)
+    with pytest.raises(SystemExit):
+        worker.run_once(MaintenanceBudget())
+    monkeypatch.setattr(maintenance.shutil, "rmtree", cleanup)
+    assert not list(tmp_path.glob("jobs/*/checkpoint.json"))
+    assert list(tmp_path.glob("publications/*.json"))
+    receipt_path = tmp_path / "receipts" / "singapore_2024_race.json"
+    assert json.loads(receipt_path.read_text())["status"] == "published"
+    store.operations.clear()
+    store.downloads.clear()
+    transcriber.calls.clear()
+    store.fail = True
+
+    deferred = worker.run_once(MaintenanceBudget())
+    reads_after_failure = list(store.reads)
+    waiting = worker.run_once(MaintenanceBudget())
+    assert deferred.status == waiting.status == "deferred"
+    assert deferred.retry_at == waiting.retry_at == current + timedelta(minutes=5)
+    assert store.reads == reads_after_failure
+    current += timedelta(minutes=5)
+
+    repaired = worker.run_once(MaintenanceBudget())
+
+    assert repaired.status == "published"
+    assert json.loads(receipt_path.read_text())["status"] == "published"
+    assert not list(tmp_path.glob("publications/*.json"))
+    assert not list(tmp_path.glob("jobs/*/checkpoint.json"))
+    assert not store.downloads
+    assert not transcriber.calls
+    assert not store.operations
+
+
 def test_dry_run_retains_complete_checkpoint_without_remote_writes(tmp_path):
     store, transcriber = MemoryStore(), ScriptedTranscriber()
     original = add_publishable_archive(store)

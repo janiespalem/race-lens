@@ -442,7 +442,14 @@ class RadioArchiveMaintainer:
             raise ValueError("publication parent differs")
         job = self.workspace / "jobs" / job_id
         receipt = self._receipt(replay, job_id)
-        if not receipt or receipt["status"] != "published":
+        completed = receipt is not None and receipt["status"] == "published"
+        completion_path = self.workspace / "completions" / f"{replay}.json"
+        if completion_path.exists():
+            proof = _read_json(completion_path)
+            if set(proof) != {"job_id", "manifest_digest"}:
+                raise ValueError("invalid completion proof")
+            completed = proof == {"job_id": job_id, "manifest_digest": manifest_digest(manifest)}
+        if not completed:
             clips, states, clip_keys = self._inventory(source, job)
             checkpoint = self._checkpoint(job / "checkpoint.json", identity, clip_keys)
             fixture, summary = self._final_fixture(source, job, clips, states, clip_keys, checkpoint)
@@ -471,6 +478,10 @@ class RadioArchiveMaintainer:
             raise ValueError("published manifest changed")
         for row in stored["files"].values():
             self.store.verify(row["key"], size=row["size"], sha256=row["sha256"])
+        _atomic_json(
+            self.workspace / "completions" / f"{replay}.json",
+            {"job_id": job_id, "manifest_digest": manifest_digest(stored)},
+        )
         _atomic_json(
             self.workspace / "receipts" / f"{replay}.json",
             {"job_id": job_id, "status": "published", "reason": None, "attempts": 0, "retry_at": None},
