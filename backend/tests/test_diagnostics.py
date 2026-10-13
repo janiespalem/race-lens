@@ -2,6 +2,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from threading import Barrier
 
 import pytest
 
@@ -10,8 +11,49 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from racelens.events.models import dump_jsonl  # noqa: E402
 from racelens.object_storage import RemoteSessionCache, publish_session  # noqa: E402
+import racelens.object_storage as storage  # noqa: E402
+from racelens.radio.models import RadioSummary, CURRENT_RADIO_PROFILE, CURRENT_RADIO_POLICY  # noqa: E402
 from tests.test_object_storage import MemoryStore  # noqa: E402
 from tests.test_replay import mini_race  # noqa: E402
+
+
+def test_remote_cache_materializes_revision_once_for_concurrent_readers(tmp_path):
+    class CountingStore(MemoryStore):
+        downloads = []
+
+        def download_verified(self, key, *args, **kwargs):
+            self.downloads.append(key)
+            return super().download_verified(key, *args, **kwargs)
+
+    store = CountingStore()
+    fixture, track, positions = (tmp_path / name for name in ("race.jsonl", "track", "positions"))
+    fixture.write_bytes(b'{"event":"old"}\n')
+    track.write_bytes(b'{}\n')
+    positions.write_bytes(b'{}\n')
+    current = publish_session(
+        store, "2024-08-r", "monaco_2024_race", fixture, track, positions, event_count=1,
+    )
+    cache = RemoteSessionCache(store, tmp_path / "cache")
+    with cache.lease("monaco_2024_race") as root:
+        assert (root / "monaco_2024_race.jsonl").read_bytes() == b'{"event":"old"}\n'
+    fixture.write_bytes(b'{"event":"new"}\n')
+    revised = storage.publish_archive_revision(
+        store, current, fixture, track, positions, event_count=1,
+        radio_summary=RadioSummary(CURRENT_RADIO_PROFILE, CURRENT_RADIO_POLICY, 0, 0, 0, 0).to_manifest(),
+    )
+    barrier = Barrier(4)
+
+    def read(_):
+        with cache.lease("monaco_2024_race") as root:
+            barrier.wait(timeout=5)
+            return (root / "monaco_2024_race.jsonl").read_bytes()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert list(pool.map(read, range(4))) == [b'{"event":"new"}\n'] * 4
+    assert store.downloads.count(revised["files"]["events.jsonl"]["key"]) == 1
+    assert len(store.downloads) == 6
+    assert cache.stats()["materializations"] == 2
+    assert cache.stats()["leases"] == 0
 
 
 def test_remote_api_reads_survive_forced_eviction(tmp_path, monkeypatch):
