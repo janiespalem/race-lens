@@ -4,19 +4,22 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from racelens.events.models import Event, load_jsonl
+from racelens.events.models import Event, load_jsonl, make_event_id
 from racelens.object_storage import (
     MAX_MANIFEST_BYTES,
     ObjectContentError,
     REPLAY_ID,
     StorageError,
+    archive_revision,
     manifest_digest,
+    publish_archive_revision,
     validate_manifest,
 )
 from racelens.radio.models import (
@@ -25,6 +28,12 @@ from racelens.radio.models import (
     FinalTranscriptDecision,
 )
 from racelens.radio.transcribe import _radio_state
+from racelens.recorder.postprocess import (
+    PostprocessError,
+    atomic_write_text,
+    validate_archive,
+    validate_fixture,
+)
 
 _BACKOFF = (timedelta(minutes=5), timedelta(minutes=15))
 _MAX_CHECKPOINT_BYTES = 4 * 1024 * 1024
@@ -187,6 +196,15 @@ class RadioArchiveMaintainer:
                 return self._quarantine(replay, "invalid_manifest")
             except StorageError:
                 return self._defer(replay, None, "storage_unavailable")
+            if self.publish:
+                try:
+                    repaired = self._repair_publication(manifest)
+                    if repaired is not None:
+                        return repaired
+                except (ValueError, ObjectContentError, PostprocessError, KeyError, TypeError):
+                    return self._quarantine(replay, "invalid_publication")
+                except StorageError:
+                    return self._defer(replay, None, "storage_unavailable")
             if (manifest.get("radio_profile"), manifest.get("radio_policy")) == (
                 self.profile,
                 self.policy,
@@ -267,6 +285,43 @@ class RadioArchiveMaintainer:
                     rejected,
                     result.retry_at,
                 )
+            complete = all(
+                state in {"manual", "accepted", "rejected"} or clip_key in decisions
+                for state, clip_key in zip(states, clip_keys)
+            )
+            if complete:
+                try:
+                    fixture, summary = self._final_fixture(
+                        manifest, job, clips, states, clip_keys, checkpoint
+                    )
+                    if self.publish:
+                        latest = validate_manifest(
+                            self.store.get_json(key, limit=MAX_MANIFEST_BYTES)
+                        )
+                        if manifest_digest(latest) != identity[1]:
+                            raise ValueError("archive source manifest conflict")
+                        files = self._local_files(fixture, job)
+                        _atomic_json(
+                            self.workspace / "publications" / f"{replay}.json",
+                            {
+                                "job_id": job_id,
+                                "source_manifest": manifest,
+                                "revision": archive_revision(files, summary),
+                            },
+                        )
+                        published = publish_archive_revision(
+                            self.store, manifest, fixture, job / "track.json",
+                            job / "positions.json", event_count=manifest["event_count"],
+                            radio_summary=summary,
+                        )
+                        self._complete_publication(published, job_id)
+                        return MaintenanceResult(
+                            "published", replay, len(clips), processed, reused, accepted, rejected
+                        )
+                except (ValueError, ObjectContentError, PostprocessError, KeyError, TypeError):
+                    return self._quarantine(replay, "invalid_archive_or_source_conflict", job_id)
+                except StorageError:
+                    return self._defer(replay, job_id, "storage_unavailable")
             _atomic_json(
                 self.workspace / "receipts" / f"{replay}.json",
                 {
@@ -281,6 +336,151 @@ class RadioArchiveMaintainer:
                 "progressed", replay, len(clips), processed, reused, accepted, rejected
             )
         return waiting
+
+    def _local_files(self, fixture: Path, job: Path) -> dict:
+        return {
+            name: {"size": path.stat().st_size,
+                   "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for name, path in (
+                ("events.jsonl", fixture), ("track.json", job / "track.json"),
+                ("positions.json", job / "positions.json"),
+            )
+        }
+
+    def _final_fixture(
+        self, manifest: dict, job: Path, clips: list[Event], states: list[str],
+        clip_keys: list[str], checkpoint: dict,
+    ) -> tuple[Path, dict]:
+        for name, row in manifest["files"].items():
+            data = (job / name).read_bytes()
+            if len(data) != row["size"] or hashlib.sha256(data).hexdigest() != row["sha256"]:
+                raise ValueError("source artifact changed")
+        lines = [line for line in (job / "events.jsonl").read_bytes().decode().splitlines() if line.strip()]
+        rows = [json.loads(line) for line in lines]
+        if len(rows) != manifest["event_count"] or len({row["event_id"] for row in rows}) != len(rows):
+            raise ValueError("source event count or identity differs")
+        inventory = {
+            item.event_id: (state, clip_key)
+            for item, state, clip_key in zip(clips, states, clip_keys)
+        }
+        summary = {"profile": self.profile, "policy": self.policy,
+                   "total": len(clips), "accepted": 0, "rejected": 0, "manual": 0}
+        output = []
+        for source, line in zip(rows, lines):
+            if source["event_id"] in inventory:
+                state, clip_key = inventory[source["event_id"]]
+                decision = checkpoint["decisions"].get(clip_key)
+                if state in {"manual", "accepted", "rejected"}:
+                    if decision is not None:
+                        raise ValueError("checkpoint changes protected radio")
+                else:
+                    if decision is None:
+                        raise ValueError("radio reconciliation is incomplete")
+                    target = json.loads(line)
+                    payload = target["payload"]
+                    payload.pop("transcript", None)
+                    payload["transcript_metadata"] = decision["metadata"]
+                    if decision["text"] is not None:
+                        payload["transcript"] = decision["text"]
+                    target["event_id"] = make_event_id(
+                        target["session_id"], target["type"], target["session_time_ms"],
+                        target.get("driver_id"), payload,
+                    )
+                    self._validate_change(source, target)
+                    line = json.dumps(target, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                    state = decision["status"]
+                summary[state] += 1
+            output.append(line)
+        output.sort(key=lambda line: (json.loads(line)["session_time_ms"], json.loads(line)["event_id"]))
+        fixture = job / "target" / f"{manifest['replay_session_id']}.jsonl"
+        text = "\n".join(output) + "\n"
+        atomic_write_text(fixture, text)
+        if fixture.read_bytes() != text.encode():
+            raise ValueError("target fixture differs from reconciled source")
+        if validate_fixture(fixture) != manifest["event_count"]:
+            raise ValueError("target event count differs")
+        report = validate_archive(fixture, job / "track.json", job / "positions.json")
+        if report.events != manifest["event_count"]:
+            raise ValueError("archive event count differs")
+        for name in ("track.json", "positions.json"):
+            data = (job / name).read_bytes()
+            row = manifest["files"][name]
+            if len(data) != row["size"] or hashlib.sha256(data).hexdigest() != row["sha256"]:
+                raise ValueError("non-radio artifact changed")
+        return fixture, summary
+
+    def _validate_change(self, source: dict, target: dict) -> None:
+        if source["payload"].get("category") != "Radio" or _ownership(
+            source["payload"], self.profile, self.policy
+        ) not in {"unprocessed", "stale"}:
+            raise ValueError("only machine radio may change")
+        def protected(row: dict) -> dict:
+            return {
+                **{key: value for key, value in row.items() if key not in {"event_id", "payload"}},
+                "payload": {key: value for key, value in row["payload"].items()
+                            if key not in {"transcript", "transcript_metadata"}},
+            }
+        if protected(source) != protected(target):
+            raise ValueError("radio source identity changed")
+
+    def _repair_publication(self, manifest: dict) -> MaintenanceResult | None:
+        replay = manifest["replay_session_id"]
+        path = self.workspace / "publications" / f"{replay}.json"
+        if not path.exists():
+            return None
+        intent = _read_json(path)
+        if set(intent) != {"job_id", "source_manifest", "revision"}:
+            raise ValueError("invalid publication intent")
+        source = validate_manifest(intent["source_manifest"])
+        identity = [replay, manifest_digest(source), self.profile, self.policy]
+        job_id = _digest(identity)
+        if source["replay_session_id"] != replay or intent["job_id"] != job_id:
+            raise ValueError("publication identity differs")
+        if manifest.get("revision") != intent["revision"]:
+            return None
+        if manifest.get("parent_revision") != source.get("revision", identity[1]):
+            raise ValueError("publication parent differs")
+        job = self.workspace / "jobs" / job_id
+        receipt = self._receipt(replay, job_id)
+        if not receipt or receipt["status"] != "published":
+            clips, states, clip_keys = self._inventory(source, job)
+            checkpoint = self._checkpoint(job / "checkpoint.json", identity, clip_keys)
+            fixture, summary = self._final_fixture(source, job, clips, states, clip_keys, checkpoint)
+            files = self._local_files(fixture, job)
+            if archive_revision(files, summary) != intent["revision"] or any(
+                manifest["files"][name][field] != row[field]
+                for name, row in files.items() for field in ("size", "sha256")
+            ) or manifest["event_count"] != source["event_count"] or any(
+                manifest[field] != source[field]
+                for field in ("canonical_session_id", "replay_session_id", "source")
+            ) or manifest["radio_profile"] != self.profile or manifest["radio_policy"] != self.policy or (
+                manifest["radio_summary"] != {name: summary[name] for name in ("total", "accepted", "rejected", "manual")}
+            ):
+                raise ValueError("publication content differs")
+        self._complete_publication(manifest, job_id)
+        counts = manifest["radio_summary"]
+        return MaintenanceResult(
+            "published", replay, counts["total"], clips_reused=counts["accepted"] + counts["rejected"],
+            accepted=counts["accepted"], rejected=counts["rejected"],
+        )
+
+    def _complete_publication(self, manifest: dict, job_id: str) -> None:
+        replay = manifest["replay_session_id"]
+        stored = validate_manifest(self.store.get_json(f"sessions/{replay}/manifest.json", limit=MAX_MANIFEST_BYTES))
+        if stored != manifest:
+            raise ValueError("published manifest changed")
+        for row in stored["files"].values():
+            self.store.verify(row["key"], size=row["size"], sha256=row["sha256"])
+        _atomic_json(
+            self.workspace / "receipts" / f"{replay}.json",
+            {"job_id": job_id, "status": "published", "reason": None, "attempts": 0, "retry_at": None},
+        )
+        job = self.workspace / "jobs" / job_id
+        if job.is_symlink():
+            raise ValueError("publication workspace must not be a symlink")
+        if job.exists():
+            shutil.rmtree(job)
+        (self.workspace / "publications" / f"{replay}.json").unlink(missing_ok=True)
 
     def _inventory(self, manifest: dict, job: Path) -> tuple[list[Event], list[str], list[str]]:
         for name, row in manifest["files"].items():
@@ -357,7 +557,7 @@ class RadioArchiveMaintainer:
             return None
         if (
             set(receipt) != {"job_id", "status", "reason", "attempts", "retry_at"}
-            or receipt["status"] not in {"progressed", "deferred", "quarantined"}
+            or receipt["status"] not in {"progressed", "deferred", "quarantined", "published"}
             or type(receipt["attempts"]) is not int
             or receipt["attempts"] < 0
         ):

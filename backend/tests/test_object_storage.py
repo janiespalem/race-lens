@@ -494,6 +494,38 @@ def test_publish_revision_detects_manifest_readback_mismatch(tmp_path):
         )
 
 
+@pytest.mark.parametrize("failure_index", [1, 2, 3])
+def test_publish_revision_requires_each_post_manifest_object_read_verification(tmp_path, failure_index):
+    class FailingStore(MemoryStore):
+        committed_verifications = 0
+        fail = True
+
+        def verify(self, key, **kwargs):
+            manifest = self.objects.get("sessions/monaco_2024_race/manifest.json", {})
+            if self.fail and manifest.get("schema_version") == 2:
+                self.committed_verifications += 1
+                if self.committed_verifications == failure_index:
+                    raise StorageError("post-manifest read verification failed")
+            super().verify(key, **kwargs)
+
+    store = FailingStore()
+    current, paths = _published_archive(tmp_path, store)
+
+    with pytest.raises(StorageError, match="post-manifest"):
+        storage.publish_archive_revision(
+            store, current, *paths, event_count=1, radio_summary=_radio_summary(),
+        )
+
+    committed = load_manifest(store, "monaco_2024_race")
+    assert committed["parent_revision"] == storage.manifest_digest(current)
+    store.fail = False
+    store.operations.clear()
+    assert storage.publish_archive_revision(
+        store, committed, *paths, event_count=1, radio_summary=_radio_summary(),
+    ) == committed
+    assert store.operations == []
+
+
 def test_publish_session_with_radio_summary_creates_initial_v2(tmp_path):
     store = MemoryStore()
     paths = _archive(tmp_path)
