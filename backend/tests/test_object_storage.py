@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import io
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -76,6 +77,57 @@ class MemoryStore:
             raise ManifestError("checksum")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(data)
+
+
+def test_s3_common_prefix_discovery_uses_bounded_delimiter_listing():
+    class Paginator:
+        request = None
+        pages_read = 0
+
+        def paginate(self, **kwargs):
+            self.request = kwargs
+            self.pages_read += 1
+            yield {"CommonPrefixes": [{"Prefix": "sessions/a_race/"}, {"Prefix": "sessions/b_race/"}],
+                   "Contents": [{"Key": f"sessions/a_race/revisions/{index:064x}/events.jsonl"}
+                                for index in range(1001)]}
+            self.pages_read += 1
+            yield {"CommonPrefixes": [{"Prefix": "sessions/c_race/"}]}
+
+    class Client:
+        def get_paginator(self, operation):
+            assert operation == "list_objects_v2"
+            return paginator
+
+    paginator = Paginator()
+    store = storage.S3Store.__new__(storage.S3Store)
+    store.bucket, store.client = "archive-bucket", Client()
+
+    assert store.list_common_prefixes("sessions/", limit=2) == ["sessions/a_race/", "sessions/b_race/"]
+    assert paginator.pages_read == 1
+    assert paginator.request == {"Bucket": "archive-bucket", "Prefix": "sessions/", "Delimiter": "/",
+                                 "PaginationConfig": {"MaxItems": 2, "PageSize": 2}}
+
+
+@pytest.mark.parametrize("content,size,limit", [
+    (b'{"bad": invalid}', 16, 100), (b"[]", 2, 100), (b"\xff", 1, 100),
+    (b"oversized", 9, 8), (b"changed", 6, 100), (b"{}", -1, 100),
+])
+def test_s3_invalid_content_is_distinct_from_transient_storage_errors(content, size, limit):
+    body = io.BytesIO(content)
+
+    class Client:
+        def get_object(self, **kwargs):
+            assert kwargs == {"Bucket": "archive-bucket", "Key": "sessions/race/manifest.json"}
+            return {"ContentLength": size, "Body": body}
+
+    store = storage.S3Store.__new__(storage.S3Store)
+    store.bucket, store.client = "archive-bucket", Client()
+
+    with pytest.raises(StorageError) as error:
+        store.get_json("sessions/race/manifest.json", limit=limit)
+
+    assert type(error.value) is storage.ObjectContentError
+    assert body.closed
 
 
 def test_live_snapshot_accepts_old_and_new_race_control_contract():

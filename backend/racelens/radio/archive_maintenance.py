@@ -13,6 +13,7 @@ from typing import Any, Callable, Literal
 from racelens.events.models import Event, load_jsonl
 from racelens.object_storage import (
     MAX_MANIFEST_BYTES,
+    ObjectContentError,
     REPLAY_ID,
     StorageError,
     manifest_digest,
@@ -146,15 +147,15 @@ class RadioArchiveMaintainer:
         except (ValueError, KeyError, TypeError):
             return MaintenanceResult("quarantined")
         try:
-            listed = self.store.list_keys("sessions/", limit=1000)
+            listed = self.store.list_common_prefixes("sessions/", limit=1000)
         except StorageError:
             return MaintenanceResult("deferred", retry_at=started + _BACKOFF[0])
         keys = sorted(
-            key
-            for key in listed[:1000]
-            if key.startswith("sessions/")
-            and key.endswith("/manifest.json")
-            and len(key.split("/")) == 3
+            prefix + "manifest.json"
+            for prefix in listed[:1000]
+            if prefix.startswith("sessions/")
+            and prefix.endswith("/")
+            and len(prefix.split("/")) == 3
         )
         after = cursor["after"]
         keys = [key for key in keys if after is None or key > after] + [
@@ -169,10 +170,20 @@ class RadioArchiveMaintainer:
                 continue
             _atomic_json(cursor_path, {"after": key})
             try:
+                receipt = self._receipt(replay, None)
+                retry_at = (
+                    _parsed_time(receipt["retry_at"]) if receipt and receipt["retry_at"] else None
+                )
+                if retry_at and self.now() < retry_at:
+                    waiting = MaintenanceResult("deferred", replay, retry_at=retry_at)
+                    continue
+            except (ValueError, KeyError, TypeError):
+                return self._quarantine(replay, "invalid_retry_receipt")
+            try:
                 manifest = validate_manifest(self.store.get_json(key, limit=MAX_MANIFEST_BYTES))
                 if manifest["replay_session_id"] != replay:
                     raise ValueError("manifest replay identity differs")
-            except ValueError:
+            except (ValueError, ObjectContentError):
                 return self._quarantine(replay, "invalid_manifest")
             except StorageError:
                 return self._defer(replay, None, "storage_unavailable")
@@ -198,7 +209,7 @@ class RadioArchiveMaintainer:
                     continue
                 clips, states, clip_keys = self._inventory(manifest, job)
                 checkpoint = self._checkpoint(checkpoint_path, identity, clip_keys)
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, ObjectContentError, KeyError, TypeError):
                 return self._quarantine(replay, "invalid_source_or_checkpoint", job_id)
             except StorageError:
                 return self._defer(replay, job_id, "storage_unavailable")

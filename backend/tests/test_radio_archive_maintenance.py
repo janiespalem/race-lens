@@ -1,12 +1,13 @@
 import copy
 import hashlib
+import io
 import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from racelens.events.models import dump_jsonl, event
-from racelens.object_storage import ManifestError
+from racelens.object_storage import MAX_MANIFEST_BYTES, ManifestError, S3Store, StorageError
 from racelens.radio.archive_maintenance import MaintenanceBudget, RadioArchiveMaintainer
 from racelens.radio.models import (
     CURRENT_RADIO_POLICY,
@@ -24,8 +25,17 @@ class MemoryStore:
     def list_keys(self, prefix, *, limit=1000):
         keys = sorted(key for key in self.objects if key.startswith(prefix))
         if len(keys) > limit:
-            raise RuntimeError("listing exceeds bound")
+            raise StorageError("listing exceeds bound")
         return keys
+
+    def list_common_prefixes(self, prefix, *, limit=1000):
+        return sorted(
+            {
+                prefix + key[len(prefix) :].split("/", 1)[0] + "/"
+                for key in self.objects
+                if key.startswith(prefix)
+            }
+        )[:limit]
 
     def get_json(self, key, *, limit):
         self.reads.append(key)
@@ -60,6 +70,21 @@ class ScriptedTranscriber:
                 "reason": None,
             },
         )
+
+
+class JsonManifestStore(MemoryStore):
+    def get_json(self, key, *, limit):
+        self.reads.append(key)
+        raw = self.objects[key]
+
+        class Client:
+            def get_object(self, **kwargs):
+                assert kwargs == {"Bucket": "archive-bucket", "Key": key}
+                return {"ContentLength": len(raw), "Body": io.BytesIO(raw)}
+
+        reader = S3Store.__new__(S3Store)
+        reader.bucket, reader.client = "archive-bucket", Client()
+        return reader.get_json(key, limit=limit)
 
 
 def add_archive(store, replay="singapore_2024_race", *, count=1, current=False, payload=None):
@@ -496,3 +521,94 @@ def test_terminal_checkpoints_survive_a_later_deferred_clip(tmp_path):
         "https://audio.example/singapore_2024_race/2",
         "https://audio.example/singapore_2024_race/1",
     ]
+
+
+def test_retained_revision_objects_do_not_block_manifest_discovery(tmp_path):
+    store, transcriber = MemoryStore(), ScriptedTranscriber()
+    add_archive(store)
+    for index in range(1001):
+        store.objects[f"sessions/singapore_2024_race/revisions/{index:064x}/events.jsonl"] = (
+            b"retained"
+        )
+
+    result = maintainer(store, tmp_path, transcriber).run_once(MaintenanceBudget())
+
+    assert result.status == "progressed"
+    assert result.clips_processed == 1
+    assert store.reads == ["sessions/singapore_2024_race/manifest.json"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b'{"files": invalid}', b"x" * (MAX_MANIFEST_BYTES + 1)],
+    ids=["malformed-json", "oversized-manifest"],
+)
+def test_invalid_remote_manifest_content_is_quarantined(tmp_path, content):
+    store, transcriber = JsonManifestStore(), ScriptedTranscriber()
+    key = "sessions/singapore_2024_race/manifest.json"
+    store.objects[key] = content
+
+    result = maintainer(store, tmp_path, transcriber).run_once(MaintenanceBudget())
+
+    assert result.status == "quarantined"
+    assert not transcriber.calls
+    assert not store.downloads
+    assert store.objects[key] == content
+
+
+def test_manifest_read_failure_obeys_replay_level_retry_receipt(tmp_path):
+    class UnavailableStore(MemoryStore):
+        def get_json(self, key, *, limit):
+            self.reads.append(key)
+            raise StorageError("provider unavailable")
+
+    store, transcriber = UnavailableStore(), ScriptedTranscriber()
+    add_archive(store)
+    current = datetime(2026, 10, 13, 12, tzinfo=UTC)
+    worker = RadioArchiveMaintainer(store, tmp_path, transcriber, now=lambda: current)
+
+    first = worker.run_once(MaintenanceBudget())
+    second = RadioArchiveMaintainer(store, tmp_path, transcriber, now=lambda: current).run_once(
+        MaintenanceBudget()
+    )
+
+    assert first.status == second.status == "deferred"
+    assert first.retry_at == second.retry_at == datetime(2026, 10, 13, 12, 5, tzinfo=UTC)
+    assert store.reads == ["sessions/singapore_2024_race/manifest.json"]
+    assert not transcriber.calls
+    current += timedelta(minutes=5)
+
+    retried = worker.run_once(MaintenanceBudget())
+
+    assert len(store.reads) == 2
+    assert retried.retry_at == datetime(2026, 10, 13, 12, 20, tzinfo=UTC)
+
+
+def test_manifest_recovery_creates_source_specific_job_after_retry_deadline(tmp_path):
+    class RecoveringStore(MemoryStore):
+        unavailable = True
+
+        def get_json(self, key, *, limit):
+            if self.unavailable:
+                self.reads.append(key)
+                raise StorageError("provider unavailable")
+            return super().get_json(key, limit=limit)
+
+    store, transcriber = RecoveringStore(), ScriptedTranscriber()
+    add_archive(store)
+    current = datetime(2026, 10, 13, 12, tzinfo=UTC)
+    worker = RadioArchiveMaintainer(store, tmp_path, transcriber, now=lambda: current)
+    worker.run_once(MaintenanceBudget())
+    store.unavailable = False
+    add_archive(store, count=2)
+    current += timedelta(minutes=5)
+
+    recovered = worker.run_once(MaintenanceBudget())
+
+    assert recovered.status == "progressed"
+    assert recovered.clips_processed == 2
+    assert len(store.reads) == 2
+    receipt = json.loads((tmp_path / "receipts" / "singapore_2024_race.json").read_text())
+    assert isinstance(receipt["job_id"], str)
+    assert receipt["retry_at"] is None
+    assert len(list(tmp_path.glob("jobs/*/checkpoint.json"))) == 1
