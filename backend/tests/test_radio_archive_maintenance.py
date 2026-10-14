@@ -7,13 +7,20 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from racelens.events.models import dump_jsonl, event, load_jsonl, make_event_id
-from racelens.object_storage import MAX_MANIFEST_BYTES, ManifestError, S3Store, StorageError
+from racelens.object_storage import (
+    MAX_MANIFEST_BYTES,
+    ManifestError,
+    S3Store,
+    StorageError,
+    manifest_digest,
+)
 from racelens.radio.archive_maintenance import MaintenanceBudget, RadioArchiveMaintainer
 from racelens.radio.models import (
     CURRENT_RADIO_POLICY,
     CURRENT_RADIO_PROFILE,
     FinalTranscriptDecision,
 )
+from racelens.recorder.status import recorder_status
 
 
 class MemoryStore:
@@ -215,6 +222,62 @@ def test_current_archive_performs_zero_downloads_or_inference(tmp_path):
     assert result.status == "idle"
     assert not store.downloads
     assert not transcriber.calls
+
+
+@pytest.mark.parametrize("publish", [False, True])
+def test_maintenance_atomically_replaces_sanitized_status(tmp_path, monkeypatch, publish):
+    import racelens.radio.archive_maintenance as module
+
+    store, transcriber = MemoryStore(), ScriptedTranscriber()
+    add_archive(store, current=True)
+    workspace = tmp_path / "state" / "radio-maintenance"
+    status_path = workspace.parent / "radio-maintenance.json"
+    status_path.parent.mkdir()
+    status_path.write_text('{"old":"private"}')
+    replace = module.os.replace
+    observed = []
+
+    def observe_replace(source, destination):
+        if destination == status_path:
+            assert status_path.read_text() == '{"old":"private"}'
+            observed.append(json.loads(module.Path(source).read_text()))
+        return replace(source, destination)
+
+    monkeypatch.setattr(module.os, "replace", observe_replace)
+    maintainer(store, workspace, transcriber, publish=publish).run_once(MaintenanceBudget())
+
+    assert json.loads(status_path.read_text()) == {
+        "mode": "enabled" if publish else "dry-run",
+        "replay_session_id": None, "status": "current",
+        "counts": {"clips_scanned": 0, "clips_processed": 0, "clips_reused": 0,
+                   "accepted": 0, "rejected": 0},
+        "updated_at": "2026-10-13T12:00:00+00:00", "attempt": 0, "retry_at": None,
+    }
+    assert len(observed) == 1
+    assert status_path.stat().st_size <= 4096
+    assert not list(status_path.parent.glob(".checkpoint-*"))
+
+
+def test_maintenance_status_reports_deferred_attempt_without_private_reason(tmp_path):
+    store = MemoryStore()
+    add_archive(store)
+    transcriber = ScriptedTranscriber([
+        FinalTranscriptDecision("deferred", None, "private reason https://secret", {}),
+    ])
+    workspace = tmp_path / "state" / "radio-maintenance"
+    worker = maintainer(store, workspace, transcriber)
+
+    worker.run_once(MaintenanceBudget())
+    marker = json.loads((workspace.parent / "radio-maintenance.json").read_text())
+
+    assert marker["status"] == "deferred"
+    assert marker["attempt"] == 1
+    assert marker["retry_at"] == "2026-10-13T12:05:00+00:00"
+    assert marker["counts"]["clips_processed"] == 1
+    assert "private" not in json.dumps(marker)
+    assert "https" not in json.dumps(marker)
+    worker.run_once(MaintenanceBudget())
+    assert json.loads((workspace.parent / "radio-maintenance.json").read_text())["attempt"] == 1
 
 
 def test_legacy_archive_is_selected_once(tmp_path):
@@ -1021,3 +1084,119 @@ def test_read_verification_failure_never_writes_completion_receipt(tmp_path):
     assert not store.operations
     assert not transcriber.calls
     assert json.loads(receipt_path.read_text())["status"] == "published"
+
+
+def test_deterministic_mixed_radio_rollout_canary(tmp_path, monkeypatch):
+    import racelens.object_storage as storage
+
+    replay = "singapore_2024_race"
+    key = f"sessions/{replay}/manifest.json"
+    current = datetime(2026, 10, 13, 12, tzinfo=UTC)
+    monkeypatch.setattr(storage, "_now", lambda: current.isoformat())
+    trace = []
+
+    class ObservedStore(MemoryStore):
+        def upload_file(self, object_key, path, *, sha256):
+            super().upload_file(object_key, path, sha256=sha256)
+            trace.append({"operation": "upload", "manifest_sha256": manifest_digest(self.objects[key])})
+
+        def put_json(self, object_key, value):
+            super().put_json(object_key, value)
+            trace.append({"operation": "put_manifest", "manifest_sha256": manifest_digest(self.objects[key])})
+
+    store = ObservedStore()
+    manual = event(replay, "RaceControlMessage", 1000, "HAM", category="Radio",
+                   audio_url="https://audio.example/manual", transcript="  Keep pushing!  ")
+    rejected = event(replay, "RaceControlMessage", 2000, "HAM", category="Radio",
+                     audio_url="https://audio.example/rejected")
+    deferred = event(replay, "RaceControlMessage", 3000, "HAM", category="Radio",
+                     audio_url="https://audio.example/deferred")
+    source = add_publishable_archive(store, extra_rows=[manual, rejected, deferred])
+    source_hash = manifest_digest(source)
+    source_bytes = {name: store.objects[row["key"]] for name, row in source["files"].items()}
+    accepted_decision = FinalTranscriptDecision("accepted", "Box this lap", None, {
+        "profile": CURRENT_RADIO_PROFILE, "policy": CURRENT_RADIO_POLICY,
+        "status": "accepted", "reason": None,
+    })
+    transcriber = ScriptedTranscriber([
+        accepted_decision,
+        FinalTranscriptDecision("rejected", None, "low_confidence", {
+            "profile": CURRENT_RADIO_PROFILE, "policy": CURRENT_RADIO_POLICY,
+            "status": "rejected", "reason": "low_confidence",
+        }),
+        FinalTranscriptDecision("deferred", None, "processing_failed", {}),
+        accepted_decision,
+    ])
+    workspace = tmp_path / "state" / "radio-maintenance"
+    measurements = []
+
+    def run_step(label, publish):
+        calls, operations = len(transcriber.calls), len(store.operations)
+        result = RadioArchiveMaintainer(
+            store, workspace, transcriber, publish=publish, now=lambda: current,
+        ).run_once(MaintenanceBudget())
+        changes = store.operations[operations:]
+        measurements.append({
+            "step": label, "status": result.status,
+            "inference_calls": len(transcriber.calls) - calls,
+            "uploads": sum(operation == "upload" for operation, _ in changes),
+            "manifest_writes": sum(operation == "put_json" for operation, _ in changes),
+            "manifest_sha256": manifest_digest(store.objects[key]),
+        })
+        status = recorder_status(tmp_path, current)["radio_maintenance"]
+        assert status["status"] == ("current" if result.status == "idle" else result.status)
+        assert status["mode"] == ("enabled" if publish else "dry-run")
+        return result
+
+    first = run_step("dry-run", False)
+    assert first.status == "deferred"
+    assert (first.clips_scanned, first.clips_processed, first.accepted, first.rejected) == (4, 3, 1, 1)
+    assert len(next(workspace.glob("jobs/*/checkpoint.json")).read_bytes()) > 0
+    run_step("restart-before-retry", False)
+    current += timedelta(minutes=5)
+    resumed = run_step("dry-run-after-retry", False)
+    assert (resumed.clips_processed, resumed.clips_reused) == (1, 2)
+    assert store.objects[key] == source
+    assert not store.operations
+    published = run_step("enabled", True)
+    assert (published.status, published.clips_processed, published.clips_reused) == ("published", 0, 3)
+    target = copy.deepcopy(store.objects[key])
+    target_hash = manifest_digest(target)
+    run_step("duplicate-enabled", True)
+
+    assert [(row["inference_calls"], row["uploads"], row["manifest_writes"]) for row in measurements] == [
+        (3, 0, 0), (0, 0, 0), (1, 0, 0), (0, 3, 1), (0, 0, 0),
+    ]
+    assert [row["manifest_sha256"] for row in measurements] == [source_hash] * 3 + [target_hash] * 2
+    assert trace == [
+        {"operation": "upload", "manifest_sha256": source_hash},
+        {"operation": "upload", "manifest_sha256": source_hash},
+        {"operation": "upload", "manifest_sha256": source_hash},
+        {"operation": "put_manifest", "manifest_sha256": target_hash},
+    ]
+    assert target["schema_version"] == 2
+    assert target["parent_revision"] == source_hash
+    assert target["radio_summary"] == {"total": 4, "accepted": 2, "rejected": 1, "manual": 1}
+    assert store.objects[key] == target
+    target_bytes = {name: store.objects[row["key"]] for name, row in target["files"].items()}
+    for name, row in source["files"].items():
+        assert store.objects[row["key"]] == source_bytes[name]
+        store.verify(row["key"], size=row["size"], sha256=row["sha256"])
+    for name, row in target["files"].items():
+        store.verify(row["key"], size=row["size"], sha256=row["sha256"])
+        if name != "events.jsonl":
+            assert target_bytes[name] == source_bytes[name]
+    preserved = [line for line in source_bytes["events.jsonl"].decode().splitlines()
+                 if json.loads(line)["event_id"] == manual.event_id
+                 or json.loads(line)["payload"].get("category") != "Radio"]
+    assert all(line in target_bytes["events.jsonl"].decode().splitlines() for line in preserved)
+    assert not next(row for row in load_jsonl(target_bytes["events.jsonl"].decode())
+                    if row.session_time_ms == 2000).payload.get("transcript")
+    assert not list(workspace.glob("jobs/*/checkpoint.json"))
+    print(json.dumps({
+        "measurements": measurements, "publication_trace": trace,
+        "source_manifest_sha256": source_hash, "target_manifest_sha256": target_hash,
+        "target_revision": target["revision"], "radio_summary": target["radio_summary"],
+        "source_object_sha256": {name: hashlib.sha256(data).hexdigest() for name, data in source_bytes.items()},
+        "target_object_sha256": {name: hashlib.sha256(data).hexdigest() for name, data in target_bytes.items()},
+    }, sort_keys=True))
