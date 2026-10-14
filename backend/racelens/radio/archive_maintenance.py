@@ -261,7 +261,7 @@ class RadioArchiveMaintainer:
                 if retry_at and self.now() < retry_at:
                     waiting = MaintenanceResult("deferred", replay, retry_at=retry_at)
                     continue
-                clips, states, clip_keys = self._inventory(manifest, job)
+                clips, states, clip_keys = self._inventory(manifest, job, self.profile, self.policy)
                 checkpoint = self._checkpoint(checkpoint_path, identity, clip_keys)
             except (ValueError, ObjectContentError, KeyError, TypeError):
                 return self._quarantine(replay, "invalid_source_or_checkpoint", job_id)
@@ -293,7 +293,7 @@ class RadioArchiveMaintainer:
                     deferred = True
                     continue
                 try:
-                    self._validate_decision(decision)
+                    self._validate_decision(decision, self.profile, self.policy)
                 except (ValueError, TypeError, AttributeError):
                     return self._quarantine(replay, "invalid_decision", job_id)
                 decisions[clip_key] = {
@@ -328,7 +328,7 @@ class RadioArchiveMaintainer:
             if complete:
                 try:
                     fixture, summary = self._final_fixture(
-                        manifest, job, clips, states, clip_keys, checkpoint
+                        manifest, job, clips, states, clip_keys, checkpoint, self.profile, self.policy
                     )
                     if self.publish:
                         latest = validate_manifest(
@@ -343,6 +343,8 @@ class RadioArchiveMaintainer:
                                 "job_id": job_id,
                                 "source_manifest": manifest,
                                 "revision": archive_revision(files, summary),
+                                "profile": self.profile,
+                                "policy": self.policy,
                             },
                         )
                         published = publish_archive_revision(
@@ -386,6 +388,7 @@ class RadioArchiveMaintainer:
     def _final_fixture(
         self, manifest: dict, job: Path, clips: list[Event], states: list[str],
         clip_keys: list[str], checkpoint: dict,
+        profile: str, policy: str,
     ) -> tuple[Path, dict]:
         for name, row in manifest["files"].items():
             data = (job / name).read_bytes()
@@ -399,7 +402,7 @@ class RadioArchiveMaintainer:
             item.event_id: (state, clip_key)
             for item, state, clip_key in zip(clips, states, clip_keys)
         }
-        summary = {"profile": self.profile, "policy": self.policy,
+        summary = {"profile": profile, "policy": policy,
                    "total": len(clips), "accepted": 0, "rejected": 0, "manual": 0}
         output = []
         for source, line in zip(rows, lines):
@@ -422,7 +425,7 @@ class RadioArchiveMaintainer:
                         target["session_id"], target["type"], target["session_time_ms"],
                         target.get("driver_id"), payload,
                     )
-                    self._validate_change(source, target)
+                    self._validate_change(source, target, profile, policy)
                     line = json.dumps(target, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                     state = decision["status"]
                 summary[state] += 1
@@ -445,9 +448,9 @@ class RadioArchiveMaintainer:
                 raise ValueError("non-radio artifact changed")
         return fixture, summary
 
-    def _validate_change(self, source: dict, target: dict) -> None:
+    def _validate_change(self, source: dict, target: dict, profile: str, policy: str) -> None:
         if source["payload"].get("category") != "Radio" or _ownership(
-            source["payload"], self.profile, self.policy
+            source["payload"], profile, policy
         ) not in {"unprocessed", "stale"}:
             raise ValueError("only machine radio may change")
         def protected(row: dict) -> dict:
@@ -465,14 +468,21 @@ class RadioArchiveMaintainer:
         if not path.exists():
             return None
         intent = _read_json(path)
-        if set(intent) != {"job_id", "source_manifest", "revision"}:
+        if set(intent) != {"job_id", "source_manifest", "revision", "profile", "policy"}:
             raise ValueError("invalid publication intent")
+        profile, policy = intent["profile"], intent["policy"]
+        if not all(isinstance(value, str) and value for value in (profile, policy)):
+            raise ValueError("invalid publication target")
         source = validate_manifest(intent["source_manifest"])
-        identity = [replay, manifest_digest(source), self.profile, self.policy]
+        identity = [replay, manifest_digest(source), profile, policy]
         job_id = _digest(identity)
         if source["replay_session_id"] != replay or intent["job_id"] != job_id:
             raise ValueError("publication identity differs")
         if manifest.get("revision") != intent["revision"]:
+            if (profile, policy) != (self.profile, self.policy):
+                if manifest_digest(manifest) != identity[1]:
+                    raise ValueError("archive source manifest conflict")
+                path.unlink()
             return None
         if manifest.get("parent_revision") != source.get("revision", identity[1]):
             raise ValueError("publication parent differs")
@@ -486,9 +496,11 @@ class RadioArchiveMaintainer:
                 raise ValueError("invalid completion proof")
             completed = proof == {"job_id": job_id, "manifest_digest": manifest_digest(manifest)}
         if not completed:
-            clips, states, clip_keys = self._inventory(source, job)
+            clips, states, clip_keys = self._inventory(source, job, profile, policy)
             checkpoint = self._checkpoint(job / "checkpoint.json", identity, clip_keys)
-            fixture, summary = self._final_fixture(source, job, clips, states, clip_keys, checkpoint)
+            fixture, summary = self._final_fixture(
+                source, job, clips, states, clip_keys, checkpoint, profile, policy
+            )
             files = self._local_files(fixture, job)
             if archive_revision(files, summary) != intent["revision"] or any(
                 manifest["files"][name][field] != row[field]
@@ -496,7 +508,7 @@ class RadioArchiveMaintainer:
             ) or manifest["event_count"] != source["event_count"] or any(
                 manifest[field] != source[field]
                 for field in ("canonical_session_id", "replay_session_id", "source")
-            ) or manifest["radio_profile"] != self.profile or manifest["radio_policy"] != self.policy or (
+            ) or manifest["radio_profile"] != profile or manifest["radio_policy"] != policy or (
                 manifest["radio_summary"] != {name: summary[name] for name in ("total", "accepted", "rejected", "manual")}
             ):
                 raise ValueError("publication content differs")
@@ -529,7 +541,9 @@ class RadioArchiveMaintainer:
             shutil.rmtree(job)
         (self.workspace / "publications" / f"{replay}.json").unlink(missing_ok=True)
 
-    def _inventory(self, manifest: dict, job: Path) -> tuple[list[Event], list[str], list[str]]:
+    def _inventory(
+        self, manifest: dict, job: Path, profile: str, policy: str,
+    ) -> tuple[list[Event], list[str], list[str]]:
         for name, row in manifest["files"].items():
             path = job / name
             if (
@@ -552,7 +566,7 @@ class RadioArchiveMaintainer:
         )
         if len(clips) > 100:
             raise ValueError("too many radio clips")
-        states = [_ownership(item.payload, self.profile, self.policy) for item in clips]
+        states = [_ownership(item.payload, profile, policy) for item in clips]
         clip_keys = [
             _digest(
                 [item.event_id, item.session_time_ms, item.driver_id, item.payload.get("audio_url")]
@@ -581,15 +595,17 @@ class RadioArchiveMaintainer:
         for row in checkpoint["decisions"].values():
             if not isinstance(row, dict) or set(row) != {"status", "text", "reason", "metadata"}:
                 raise ValueError("invalid checkpoint decision")
-            self._validate_decision(FinalTranscriptDecision(**row))
+            self._validate_decision(FinalTranscriptDecision(**row), identity[2], identity[3])
         return checkpoint
 
-    def _validate_decision(self, decision: FinalTranscriptDecision) -> None:
+    def _validate_decision(
+        self, decision: FinalTranscriptDecision, profile: str, policy: str,
+    ) -> None:
         if decision.status not in {"accepted", "rejected"}:
             raise ValueError("decision must be terminal")
         payload = {"transcript": decision.text, "transcript_metadata": decision.metadata}
         if (
-            _ownership(payload, self.profile, self.policy) != decision.status
+            _ownership(payload, profile, policy) != decision.status
             or decision.metadata.get("status") != decision.status
             or decision.metadata.get("reason") != decision.reason
         ):

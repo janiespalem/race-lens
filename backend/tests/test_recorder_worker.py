@@ -664,6 +664,58 @@ def test_starting_preparation_releases_live_transcription_without_waiting(
     assert recorder._transcripts is None
 
 
+@pytest.mark.parametrize("with_live_worker", [False, True])
+def test_preparation_releases_maintenance_loaded_model_before_start(
+    tmp_path, monkeypatch, with_live_worker,
+):
+    import io
+    import sys
+    import weakref
+    from types import SimpleNamespace
+
+    from racelens.radio import transcribe as radio
+
+    models = []
+
+    class Model:
+        def __init__(self, *args, **kwargs):
+            self.cycle = self
+            models.append(weakref.ref(self))
+
+        def transcribe(self, *args, **kwargs):
+            return [], None
+
+    class Runner(FakePreparationRunner):
+        def start(self, session):
+            assert radio._model.cache_info().currsize == 0
+            assert models[0]() is None
+            return super().start(session)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=Model))
+    monkeypatch.setattr(radio.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(b"audio"))
+    radio._model.cache_clear()
+    now = datetime(2026, 7, 19, 15, tzinfo=UTC)
+    session = replace(SESSION, starts_at=now - timedelta(hours=3))
+    recorder = Recorder(_config(tmp_path), now=lambda: now, preparation_runner=Runner())
+    if with_live_worker:
+        recorder._transcripts = radio.TranscriptWorker()
+    recorder.store.transition(session.session_id, Phase.RECORDING, now)
+    recorder.store.transition(session.session_id, Phase.CAPTURED, now)
+    monkeypatch.setattr("racelens.recorder.worker.load_fastf1_schedule", lambda _year: [session])
+    try:
+        assert radio.transcribe_final("https://audio.example/radio.mp3").status == "rejected"
+        assert radio._model.cache_info().currsize == 1
+        assert models[0]() is not None
+
+        assert recorder.run_once() == f"processing started: {session.session_id}"
+
+        assert recorder._transcripts is None
+    finally:
+        if recorder._transcripts is not None:
+            recorder._transcripts.close()
+        radio._model.cache_clear()
+
+
 def test_active_preparation_prevents_second_start(tmp_path, monkeypatch):
     now = datetime(2026, 7, 19, 15, tzinfo=UTC)
     first = replace(SESSION, starts_at=now - timedelta(hours=4))

@@ -59,6 +59,11 @@ def _model():
     return WhisperModel(MODEL_NAME, device="cpu", compute_type="int8")
 
 
+def release_model() -> None:
+    _model.cache_clear()
+    gc.collect()
+
+
 def _quality_metadata(
     segments: list[Any], *, inspect_words: bool,
 ) -> tuple[dict[str, Any], str | None]:
@@ -274,8 +279,7 @@ class TranscriptWorker:
     def close(self, *, wait: bool = True) -> None:
         self._pool.shutdown(wait=wait, cancel_futures=not wait)
         self._cache.clear()
-        _model.cache_clear()
-        gc.collect()
+        release_model()
 
 
 def enrich_fixture(path: Path) -> int:

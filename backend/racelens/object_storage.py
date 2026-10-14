@@ -56,6 +56,47 @@ class LiveRecordError(ValueError):
     """A public Live pointer or snapshot is unsafe or inconsistent."""
 
 
+@contextmanager
+def _closing_body(body: Any) -> Iterator[Any]:
+    failed = True
+    try:
+        yield body
+        failed = False
+    except StorageError:
+        raise
+    except Exception:
+        raise StorageError("object storage transfer failed") from None
+    finally:
+        try:
+            body.close()
+        except Exception:
+            if not failed:
+                raise StorageError("object storage stream cleanup failed") from None
+
+
+def _verified_chunks(response: dict, *, size: int, sha256: str) -> Iterator[bytes]:
+    try:
+        declared_size = int(response.get("ContentLength", -1))
+    except (TypeError, ValueError, OverflowError):
+        raise ObjectContentError("stored object size is invalid") from None
+    if declared_size != size:
+        raise ObjectContentError("stored object size does not match")
+    digest = hashlib.sha256()
+    read = 0
+    for chunk in iter(lambda: response["Body"].read(1024 * 1024), b""):
+        if not isinstance(chunk, bytes):
+            raise ObjectContentError("stored object content is invalid")
+        read += len(chunk)
+        if read > size:
+            raise ObjectContentError("stored object exceeds declared size")
+        digest.update(chunk)
+        yield chunk
+    if read != size:
+        raise ObjectContentError("stored object size does not match")
+    if digest.hexdigest() != sha256:
+        raise ObjectContentError("stored object checksum does not match")
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
@@ -202,9 +243,8 @@ class S3Store:
         except Exception as exc:
             if self._missing(exc):
                 return None
-            raise StorageError("object storage read failed") from exc
-        body = response["Body"]
-        try:
+            raise StorageError("object storage read failed") from None
+        with _closing_body(response["Body"]) as body:
             try:
                 size = int(response.get("ContentLength", -1))
             except (TypeError, ValueError) as exc:
@@ -215,12 +255,6 @@ class S3Store:
             if not isinstance(data, bytes) or len(data) != size or len(data) > limit:
                 raise ObjectContentError("object changed during download")
             return data
-        except StorageError:
-            raise
-        except Exception as exc:
-            raise StorageError("object storage read failed") from exc
-        finally:
-            body.close()
 
     def get_json(self, key: str, *, limit: int = MAX_RECORD_BYTES) -> dict | None:
         raw = self.get_bytes(key, limit=limit)
@@ -293,23 +327,11 @@ class S3Store:
         _safe_key(key)
         try:
             response = self.client.get_object(Bucket=self.bucket, Key=key)
-        except Exception as exc:
-            raise StorageError("object verification failed") from exc
-        body = response["Body"]
-        digest = hashlib.sha256()
-        read = 0
-        try:
-            if int(response.get("ContentLength", -1)) != size:
-                raise StorageError("stored object size does not match")
-            for chunk in iter(lambda: body.read(1024 * 1024), b""):
-                read += len(chunk)
-                if read > size:
-                    raise StorageError("stored object grew during verification")
-                digest.update(chunk)
-            if read != size or digest.hexdigest() != sha256:
-                raise StorageError("stored object checksum does not match")
-        finally:
-            body.close()
+        except Exception:
+            raise StorageError("object verification failed") from None
+        with _closing_body(response["Body"]):
+            for _ in _verified_chunks(response, size=size, sha256=sha256):
+                pass
 
     def matches(self, key: str, *, size: int, sha256: str) -> bool:
         _safe_key(key)
@@ -337,36 +359,33 @@ class S3Store:
             raise ManifestError("manifest object bounds are invalid")
         try:
             response = self.client.get_object(Bucket=self.bucket, Key=key)
-        except Exception as exc:
-            raise StorageError("archive download failed") from exc
-        body = response["Body"]
+        except Exception:
+            raise StorageError("archive download failed") from None
         temporary: str | None = None
-        digest = hashlib.sha256()
-        read = 0
         try:
-            if int(response.get("ContentLength", -1)) != size:
-                raise ManifestError("archive object size does not match manifest")
-            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            with tempfile.NamedTemporaryFile(
-                "wb", dir=destination.parent, prefix=".download-", delete=False,
-            ) as handle:
-                temporary = handle.name
-                for chunk in iter(lambda: body.read(1024 * 1024), b""):
-                    read += len(chunk)
-                    if read > size:
-                        raise ManifestError("archive object exceeds declared size")
-                    digest.update(chunk)
-                    handle.write(chunk)
-                handle.flush()
-                os.fsync(handle.fileno())
-            if read != size or digest.hexdigest() != sha256:
-                raise ManifestError("archive object checksum does not match manifest")
+            with _closing_body(response["Body"]):
+                destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                with tempfile.NamedTemporaryFile(
+                    "wb", dir=destination.parent, prefix=".download-", delete=False,
+                ) as handle:
+                    temporary = handle.name
+                    for chunk in _verified_chunks(response, size=size, sha256=sha256):
+                        handle.write(chunk)
+                    handle.flush()
+                    os.fsync(handle.fileno())
             os.replace(temporary, destination)
             temporary = None
+        except StorageError:
+            raise
+        except Exception:
+            raise StorageError("archive local file operation failed") from None
         finally:
-            body.close()
             if temporary is not None:
-                Path(temporary).unlink(missing_ok=True)
+                try:
+                    Path(temporary).unlink(missing_ok=True)
+                except OSError:
+                    # Preserve the primary transfer error and its retry classification.
+                    pass
 
 
 def _file_digest(path: Path) -> tuple[int, str]:
