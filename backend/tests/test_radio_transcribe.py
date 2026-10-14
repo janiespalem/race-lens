@@ -1,5 +1,6 @@
 """Radio transcription plumbing (model itself is not exercised — too heavy)."""
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -641,9 +642,11 @@ def test_summarize_fixture_rejects_contradictory_model(tmp_path, status) -> None
 def test_live_worker_close_waits_and_releases_model(monkeypatch) -> None:
     completed: list[str] = []
     cleared: list[bool] = []
-    monkeypatch.setattr(rt, "transcribe", lambda url: completed.append(url) or "box")
     monkeypatch.setattr(rt._model, "cache_clear", lambda: cleared.append(True))
-    worker = rt.TranscriptWorker()
+    worker = rt.TranscriptWorker(decision_fn=lambda url: (
+        completed.append(url)
+        or rt.FinalTranscriptDecision("accepted", "box", None, {})
+    ))
     worker.get("https://provider.test/radio.mp3")
 
     worker.close()
@@ -667,6 +670,117 @@ def test_live_worker_close_can_cancel_queue_without_waiting(monkeypatch) -> None
 
     assert shutdown == [{"wait": False, "cancel_futures": True}]
     assert cleared == [True]
+
+
+def _wait_for(predicate, timeout: float = 1.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.005)
+    return predicate()
+
+
+def test_live_worker_returns_only_accepted_final_text() -> None:
+    calls = []
+    worker = rt.TranscriptWorker(decision_fn=lambda url: (
+        calls.append(url)
+        or rt.FinalTranscriptDecision("accepted", "Box this lap.", None, {})
+    ))
+
+    assert worker.get("https://provider.test/accepted.mp3") is None
+    assert _wait_for(lambda: worker.get("https://provider.test/accepted.mp3")) == "Box this lap."
+    assert calls == ["https://provider.test/accepted.mp3"]
+    worker.close()
+
+
+def test_live_worker_hides_rejected_final_text_without_retry() -> None:
+    calls = []
+    worker = rt.TranscriptWorker(decision_fn=lambda url: (
+        calls.append(url)
+        or rt.FinalTranscriptDecision("rejected", None, "low_word_confidence", {})
+    ))
+    url = "https://provider.test/rejected.mp3"
+
+    assert worker.get(url) is None
+    assert _wait_for(lambda: len(calls) == 1)
+    assert all(worker.get(url) is None for _ in range(20))
+    assert calls == [url]
+    worker.close()
+
+
+def test_live_worker_retries_deferred_once_after_delay() -> None:
+    now = [0.0]
+    calls = []
+    clock_reads = []
+
+    def clock():
+        clock_reads.append(now[0])
+        return now[0]
+
+    def decide(url):
+        calls.append(url)
+        if len(calls) == 1:
+            return rt.FinalTranscriptDecision("deferred", None, "processing_failed", {})
+        return rt.FinalTranscriptDecision("accepted", "Stay out.", None, {})
+
+    worker = rt.TranscriptWorker(decision_fn=decide, clock=clock)
+    url = "https://provider.test/retry.mp3"
+
+    assert worker.get(url) is None
+    assert _wait_for(lambda: len(calls) == 1)
+    assert _wait_for(lambda: clock_reads)
+    now[0] = 29.9
+    assert all(worker.get(url) is None for _ in range(20))
+    assert len(calls) == 1
+    now[0] = 30.0
+    assert _wait_for(lambda: (worker.get(url), len(calls) == 2)[1])
+    assert _wait_for(lambda: worker.get(url)) == "Stay out."
+    assert len(calls) == 2
+    worker.close()
+
+
+def test_live_worker_stops_after_two_deferred_attempts() -> None:
+    now = [0.0]
+    calls = []
+    clock_reads = []
+
+    def clock():
+        clock_reads.append(now[0])
+        return now[0]
+
+    def defer(url):
+        calls.append(url)
+        return rt.FinalTranscriptDecision("deferred", None, "processing_failed", {})
+
+    worker = rt.TranscriptWorker(decision_fn=defer, clock=clock)
+    url = "https://provider.test/exhausted.mp3"
+
+    assert worker.get(url) is None
+    assert _wait_for(lambda: len(calls) == 1)
+    assert _wait_for(lambda: clock_reads)
+    now[0] = 30.0
+    assert _wait_for(lambda: (worker.get(url), len(calls) == 2)[1])
+    now[0] = 1000.0
+    assert all(worker.get(url) is None for _ in range(20))
+    assert len(calls) == 2
+    worker.close()
+
+
+def test_live_worker_fails_closed_for_empty_accepted_text() -> None:
+    calls = []
+    worker = rt.TranscriptWorker(decision_fn=lambda url: (
+        calls.append(url)
+        or rt.FinalTranscriptDecision("accepted", "", None, {})
+    ))
+    url = "https://provider.test/empty.mp3"
+
+    assert worker.get(url) is None
+    assert _wait_for(lambda: len(calls) == 1)
+    assert all(worker.get(url) is None for _ in range(20))
+    assert calls == [url]
+    worker.close()
 
 
 def _evaluation_manifest(tmp_path: Path, count: int = 50) -> Path:
