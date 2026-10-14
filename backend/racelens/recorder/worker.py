@@ -200,6 +200,9 @@ class Recorder:
 
     def _release_live_transcripts(self, *, wait: bool) -> None:
         if self._transcripts is None:
+            from racelens.radio.transcribe import release_model
+
+            release_model()
             return
         self._transcripts.close(wait=wait)
         self._transcripts = None

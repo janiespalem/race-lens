@@ -685,6 +685,38 @@ def test_invalid_remote_manifest_content_is_quarantined(tmp_path, content):
     assert store.objects[key] == content
 
 
+@pytest.mark.parametrize("operation", ["verify", "download_verified"])
+@pytest.mark.parametrize("failure,expected", [
+    ("read", "deferred"), ("close", "deferred"), ("checksum", "quarantined"),
+])
+def test_production_stream_failure_defers_or_quarantines_maintenance(
+    tmp_path, operation, failure, expected,
+):
+    from tests.test_object_storage import streaming_store
+
+    store, transcriber = MemoryStore(), ScriptedTranscriber()
+    original = add_publishable_archive(store)
+
+    def stream(key, *args, **kwargs):
+        data = store.objects[key]
+        if failure == "checksum":
+            data = b"x" * len(data)
+        adapter, _ = streaming_store(data, declared_size=len(data), failure=failure)
+        return getattr(adapter, operation)(key, *args, **kwargs)
+
+    setattr(store, operation, stream)
+    result = maintainer(store, tmp_path, transcriber, publish=True).run_once(MaintenanceBudget())
+
+    assert result.status == expected
+    assert (result.retry_at is not None) == (expected == "deferred")
+    assert store.objects["sessions/singapore_2024_race/manifest.json"] == original
+    assert not list(tmp_path.glob("completions/*"))
+    receipt = (tmp_path / "receipts" / "singapore_2024_race.json").read_text()
+    assert "private-provider" not in receipt
+    if operation == "download_verified":
+        assert not transcriber.calls
+
+
 def test_manifest_read_failure_obeys_replay_level_retry_receipt(tmp_path):
     class UnavailableStore(MemoryStore):
         def get_json(self, key, *, limit):
@@ -840,6 +872,60 @@ def test_manifest_failure_keeps_old_revision_visible(tmp_path):
     assert result.status == "deferred"
     assert store.objects["sessions/singapore_2024_race/manifest.json"] == original
     assert len(store.operations) == 3
+
+
+@pytest.mark.parametrize("committed", [False, True])
+@pytest.mark.parametrize("target_change", ["profile", "policy"])
+def test_target_change_recovers_outstanding_publication(tmp_path, committed, target_change):
+    class CrashingStore(MemoryStore):
+        crash = True
+
+        def put_json(self, key, value):
+            if self.crash and not committed:
+                raise SystemExit("before manifest commit")
+            super().put_json(key, value)
+            if self.crash:
+                raise SystemExit("after manifest commit")
+
+    store, old_transcriber = CrashingStore(), ScriptedTranscriber()
+    source = add_publishable_archive(store)
+    with pytest.raises(SystemExit):
+        maintainer(store, tmp_path, old_transcriber, publish=True).run_once(MaintenanceBudget())
+    intent_path = tmp_path / "publications" / "singapore_2024_race.json"
+    old_job = json.loads(intent_path.read_text())["job_id"]
+    stable_key = "sessions/singapore_2024_race/manifest.json"
+    committed_manifest = copy.deepcopy(store.objects[stable_key])
+    store.crash = False
+    store.operations.clear()
+    target = {"profile": CURRENT_RADIO_PROFILE, "policy": CURRENT_RADIO_POLICY}
+    target[target_change] = "next-target"
+    new_transcriber = ScriptedTranscriber([FinalTranscriptDecision(
+        "accepted", "Stay out", None, {**target, "status": "accepted", "reason": None},
+    )])
+    worker = maintainer(store, tmp_path, new_transcriber, publish=True, **target)
+
+    recovered = worker.run_once(MaintenanceBudget())
+
+    assert recovered.status == "published"
+    assert not intent_path.exists()
+    if committed:
+        assert store.objects[stable_key] == committed_manifest
+        assert not store.operations
+        assert not new_transcriber.calls
+        assert not (tmp_path / "jobs" / old_job).exists()
+        proof = json.loads((tmp_path / "completions" / "singapore_2024_race.json").read_text())
+        assert proof == {"job_id": old_job, "manifest_digest": manifest_digest(committed_manifest)}
+        assert worker.run_once(MaintenanceBudget()).status == "published"
+    else:
+        assert (tmp_path / "jobs" / old_job / "checkpoint.json").exists()
+    final = store.objects[stable_key]
+    assert final["radio_profile"] == target["profile"]
+    assert final["radio_policy"] == target["policy"]
+    assert len(new_transcriber.calls) == 1
+    assert final["event_count"] == source["event_count"]
+    store.operations.clear()
+    assert worker.run_once(MaintenanceBudget()).status == "idle"
+    assert not store.operations
 
 
 @pytest.mark.parametrize("crash_point", ["manifest", "receipt", "before-cleanup", "after-cleanup"])

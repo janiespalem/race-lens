@@ -130,6 +130,143 @@ def test_s3_invalid_content_is_distinct_from_transient_storage_errors(content, s
     assert body.closed
 
 
+def streaming_store(content=b"archive", *, declared_size=7, failure=None):
+    class Body(io.BytesIO):
+        def read(self, size=-1):
+            if failure == "read":
+                raise TimeoutError("https://private-provider.test/path?secret=token")
+            return super().read(size)
+
+        def close(self):
+            if self.closed:
+                return
+            super().close()
+            if failure == "close":
+                raise OSError("https://private-provider.test/path?secret=token")
+
+    body = Body(content)
+
+    class Client:
+        def get_object(self, **kwargs):
+            if failure == "get":
+                raise TimeoutError("https://private-provider.test/path?secret=token")
+            return {"ContentLength": declared_size, "Body": body}
+
+    store = storage.S3Store.__new__(storage.S3Store)
+    store.bucket, store.client = "archive-bucket", Client()
+    return store, body
+
+
+def stream_operation(store, operation, destination):
+    if operation == "get_bytes":
+        return store.get_bytes("sessions/race/events.jsonl", limit=100)
+    method = getattr(store, operation)
+    args = ["sessions/race/events.jsonl"]
+    if operation == "download_verified":
+        args.append(destination)
+    return method(*args, size=7, sha256=hashlib.sha256(b"archive").hexdigest())
+
+
+@pytest.mark.parametrize("operation", ["verify", "download_verified", "get_bytes"])
+@pytest.mark.parametrize("failure", ["get", "read", "close"])
+def test_s3_stream_transport_failure_is_sanitized(tmp_path, operation, failure):
+    import traceback
+
+    store, body = streaming_store(failure=failure)
+    destination = tmp_path / "events.jsonl"
+    destination.write_bytes(b"previous")
+
+    with pytest.raises(StorageError) as error:
+        stream_operation(store, operation, destination)
+
+    assert type(error.value) is StorageError
+    details = "".join(traceback.format_exception(error.value))
+    assert "private-provider" not in details
+    assert "secret=token" not in details
+    assert destination.read_bytes() == b"previous"
+    assert not list(tmp_path.glob(".download-*"))
+    if failure != "get":
+        assert body.closed
+
+
+@pytest.mark.parametrize("operation", ["verify", "download_verified"])
+@pytest.mark.parametrize("content,declared_size", [
+    (b"archive", 8), (b"archive", "invalid"), (b"archive", None),
+    (b"short", 7), (b"archive-extra", 7), (b"corrupt", 7),
+])
+def test_s3_stream_corruption_is_permanent(tmp_path, operation, content, declared_size):
+    store, body = streaming_store(content, declared_size=declared_size)
+    destination = tmp_path / "events.jsonl"
+    destination.write_bytes(b"previous")
+
+    with pytest.raises(storage.ObjectContentError):
+        stream_operation(store, operation, destination)
+
+    assert body.closed
+    assert destination.read_bytes() == b"previous"
+    assert not list(tmp_path.glob(".download-*"))
+
+
+@pytest.mark.parametrize("operation", ["verify", "download_verified"])
+def test_s3_close_failure_does_not_mask_permanent_corruption(tmp_path, operation):
+    store, body = streaming_store(b"corrupt", failure="close")
+    with pytest.raises(storage.ObjectContentError):
+        stream_operation(store, operation, tmp_path / "events.jsonl")
+    assert body.closed
+
+
+@pytest.mark.parametrize("failure", ["mkdir", "temporary", "fsync", "replace", "cleanup"])
+def test_s3_download_local_failure_is_sanitized_and_retryable(tmp_path, monkeypatch, failure):
+    import traceback
+
+    store, body = streaming_store(failure="read" if failure == "cleanup" else None)
+    destination = tmp_path / "events.jsonl"
+    destination.write_bytes(b"previous")
+
+    def fail(*args, **kwargs):
+        raise OSError("/private/local/path/secret")
+
+    owner, name = {
+        "mkdir": (Path, "mkdir"),
+        "temporary": (storage.tempfile, "NamedTemporaryFile"),
+        "fsync": (storage.os, "fsync"),
+        "replace": (storage.os, "replace"),
+        "cleanup": (Path, "unlink"),
+    }[failure]
+    monkeypatch.setattr(owner, name, fail)
+
+    with pytest.raises(StorageError) as error:
+        stream_operation(store, "download_verified", destination)
+
+    assert type(error.value) is StorageError
+    details = "".join(traceback.format_exception(error.value))
+    assert "/private/local/path" not in details
+    assert "private-provider" not in details
+    assert body.closed
+    assert destination.read_bytes() == b"previous"
+
+
+def test_s3_download_replaces_destination_only_after_verified_stream_closes(tmp_path):
+    data = b"archive"
+    store, body = streaming_store(data)
+    destination = tmp_path / "events.jsonl"
+    destination.write_bytes(b"previous")
+    original_close = body.close
+
+    def close_before_replacement():
+        if body.closed:
+            return
+        assert destination.read_bytes() == b"previous"
+        original_close()
+
+    body.close = close_before_replacement
+    stream_operation(store, "download_verified", destination)
+
+    assert body.closed
+    assert destination.read_bytes() == data
+    assert not list(tmp_path.glob(".download-*"))
+
+
 def test_live_snapshot_accepts_old_and_new_race_control_contract():
     state = ReplayEngine([event("race", "SessionStarted", 0)]).state_at(10)
     state.update(frame_source="live", viewbox=None)
