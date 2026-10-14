@@ -142,6 +142,42 @@ class RadioArchiveMaintainer:
         self.now = now or (lambda: datetime.now(UTC))
 
     def run_once(self, budget: MaintenanceBudget) -> MaintenanceResult:
+        result = self._run_once(budget)
+        attempt = 0
+        if result.replay_session_id is not None:
+            try:
+                receipt = _read_json(
+                    self.workspace / "receipts" / f"{result.replay_session_id}.json"
+                )
+                if (
+                    receipt.get("status") == result.status
+                    and type(receipt.get("attempts")) is int
+                    and 0 <= receipt["attempts"] <= 2**31 - 1
+                ):
+                    attempt = receipt["attempts"]
+            except (OSError, ValueError, TypeError):
+                pass
+        _atomic_json(
+            self.workspace.parent / "radio-maintenance.json",
+            {
+                "mode": "enabled" if self.publish else "dry-run",
+                "replay_session_id": result.replay_session_id,
+                "status": "current" if result.status == "idle" else result.status,
+                "counts": {
+                    "clips_scanned": result.clips_scanned,
+                    "clips_processed": result.clips_processed,
+                    "clips_reused": result.clips_reused,
+                    "accepted": result.accepted,
+                    "rejected": result.rejected,
+                },
+                "updated_at": self.now().isoformat(),
+                "attempt": attempt,
+                "retry_at": result.retry_at.isoformat() if result.retry_at else None,
+            },
+        )
+        return result
+
+    def _run_once(self, budget: MaintenanceBudget) -> MaintenanceResult:
         _validate_budget(budget)
         started = self.now()
         if started.tzinfo is None:
