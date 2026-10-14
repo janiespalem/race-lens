@@ -62,7 +62,7 @@ def _maintenance(path: Path, now: datetime) -> dict | None:
             "counts": counts, "age_seconds": round(max(0.0, age), 3),
             "attempt": value["attempt"], "retry_age_seconds": retry_age,
         }
-    except (OSError, TypeError, ValueError):
+    except (OSError, OverflowError, TypeError, ValueError):
         return None
 
 
