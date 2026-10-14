@@ -217,6 +217,20 @@ def test_recorder_status_rejects_unsafe_maintenance_receipts(tmp_path, mutation)
     assert recorder_status(tmp_path, now)["radio_maintenance"] is None
 
 
+@pytest.mark.parametrize("field,timestamp", [
+    ("updated_at", "0001-01-01T00:00:00+01:00"),
+    ("retry_at", "9999-12-31T23:59:59-01:00"),
+])
+def test_recorder_status_rejects_maintenance_timestamp_utc_overflow(tmp_path, field, timestamp):
+    now = datetime(2026, 10, 13, 12, tzinfo=UTC)
+    state = tmp_path / "state"
+    state.mkdir()
+    marker = _maintenance_marker(now) | {field: timestamp}
+    (state / "radio-maintenance.json").write_text(json.dumps(marker))
+
+    assert recorder_status(tmp_path, now)["radio_maintenance"] is None
+
+
 @pytest.mark.parametrize("kind", ["symlink", "oversized", "unicode_oversized", "invalid", "missing"])
 def test_recorder_status_ignores_unsafe_or_missing_maintenance_file(tmp_path, kind):
     now = datetime(2026, 10, 13, 12, tzinfo=UTC)
