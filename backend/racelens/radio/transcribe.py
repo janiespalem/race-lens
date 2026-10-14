@@ -17,12 +17,14 @@ from __future__ import annotations
 import gc
 import sys
 import tempfile
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from threading import Lock
+from typing import Any, Callable, Literal
 
 from racelens.radio.models import (
     CURRENT_RADIO_POLICY,
@@ -253,6 +255,14 @@ def summarize_fixture(path: Path) -> RadioSummary:
     )
 
 
+@dataclass(slots=True)
+class _LiveTranscriptState:
+    status: Literal["pending", "accepted", "rejected", "deferred", "exhausted"]
+    attempts: int
+    text: str | None = None
+    retry_at: float = 0.0
+
+
 class TranscriptWorker:
     """Live-mode transcript cache: one background thread, in-memory results.
 
@@ -261,24 +271,76 @@ class TranscriptWorker:
     fixture enrichment through the CLI is the durable path.
     """
 
-    def __init__(self) -> None:
-        self._cache: dict[str, str | None] = {}  # url -> text (None = queued/failed)
+    def __init__(
+        self,
+        *,
+        decision_fn: Callable[[str], FinalTranscriptDecision] | None = None,
+        clock: Callable[[], float] | None = None,
+        retry_delay_s: float = 30.0,
+        max_attempts: int = 2,
+    ) -> None:
+        self._decision_fn = decision_fn or transcribe_final
+        self._clock = clock or time.monotonic
+        self._retry_delay_s = retry_delay_s
+        self._max_attempts = max_attempts
+        self._states: dict[str, _LiveTranscriptState] = {}
+        self._lock = Lock()
+        self._closed = False
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="radio-whisper")
 
     def get(self, url: str) -> str | None:
-        if url not in self._cache:
-            self._cache[url] = None
-            self._pool.submit(self._work, url)
-        return self._cache[url]
+        with self._lock:
+            if self._closed:
+                return None
+            state = self._states.get(url)
+            if state is None:
+                state = _LiveTranscriptState("pending", 1)
+                self._states[url] = state
+                self._pool.submit(self._work, url)
+            elif state.status == "accepted":
+                return state.text
+            elif (
+                state.status == "deferred"
+                and state.attempts < self._max_attempts
+                and self._clock() >= state.retry_at
+            ):
+                state.status = "pending"
+                state.attempts += 1
+                self._pool.submit(self._work, url)
+            return None
 
     def _work(self, url: str) -> None:
-        text = transcribe(url)
-        if text:
-            self._cache[url] = text
+        try:
+            decision = self._decision_fn(url)
+        except Exception:
+            decision = FinalTranscriptDecision(
+                "deferred", None, "processing_failed", {},
+            )
+        with self._lock:
+            state = self._states.get(url)
+            if state is None or state.status != "pending":
+                return
+            if (
+                decision.status == "accepted"
+                and isinstance(decision.text, str)
+                and decision.text.strip()
+            ):
+                state.status = "accepted"
+                state.text = decision.text
+            elif decision.status == "rejected" or decision.status == "accepted":
+                state.status = "rejected"
+            elif state.attempts >= self._max_attempts:
+                state.status = "exhausted"
+            else:
+                state.status = "deferred"
+                state.retry_at = self._clock() + self._retry_delay_s
 
     def close(self, *, wait: bool = True) -> None:
+        with self._lock:
+            self._closed = True
         self._pool.shutdown(wait=wait, cancel_futures=not wait)
-        self._cache.clear()
+        with self._lock:
+            self._states.clear()
         release_model()
 
 
