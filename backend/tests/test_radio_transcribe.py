@@ -1,7 +1,9 @@
 """Radio transcription plumbing (model itself is not exercised — too heavy)."""
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, Lock
 
 import pytest
 
@@ -693,6 +695,70 @@ def test_live_worker_returns_only_accepted_final_text() -> None:
     assert _wait_for(lambda: worker.get("https://provider.test/accepted.mp3")) == "Box this lap."
     assert calls == ["https://provider.test/accepted.mp3"]
     worker.close()
+
+
+def test_live_worker_single_flights_concurrent_gets() -> None:
+    started = Event()
+    release = Event()
+    calls = []
+    calls_lock = Lock()
+
+    def decide(url):
+        with calls_lock:
+            calls.append(url)
+        started.set()
+        assert release.wait(1)
+        return rt.FinalTranscriptDecision("accepted", "Box this lap.", None, {})
+
+    worker = rt.TranscriptWorker(decision_fn=decide)
+    url = "https://provider.test/concurrent.mp3"
+
+    with ThreadPoolExecutor(max_workers=20) as callers:
+        results = list(callers.map(lambda _index: worker.get(url), range(20)))
+
+    assert results == [None] * 20
+    assert started.wait(1)
+    assert calls == [url]
+    release.set()
+    assert _wait_for(lambda: worker.get(url)) == "Box this lap."
+    assert calls == [url]
+    worker.close()
+
+
+def test_live_worker_get_after_close_does_not_schedule_work() -> None:
+    calls = []
+    worker = rt.TranscriptWorker(decision_fn=lambda url: calls.append(url))
+
+    worker.close()
+
+    assert worker.get("https://provider.test/closed.mp3") is None
+    assert calls == []
+
+
+def test_live_worker_discards_result_that_finishes_after_nonblocking_close(
+    monkeypatch,
+) -> None:
+    started = Event()
+    release = Event()
+    finished = Event()
+    monkeypatch.setattr(rt, "release_model", lambda: None)
+
+    def decide(_url):
+        started.set()
+        assert release.wait(1)
+        finished.set()
+        return rt.FinalTranscriptDecision("accepted", "Stay out.", None, {})
+
+    worker = rt.TranscriptWorker(decision_fn=decide)
+    url = "https://provider.test/late.mp3"
+    assert worker.get(url) is None
+    assert started.wait(1)
+
+    worker.close(wait=False)
+    release.set()
+
+    assert finished.wait(1)
+    assert worker.get(url) is None
 
 
 def test_live_worker_hides_rejected_final_text_without_retry() -> None:
