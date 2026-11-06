@@ -756,6 +756,29 @@ def test_restart_relaunches_persisted_processing_once(tmp_path, monkeypatch):
     assert runner.starts == [session.session_id]
 
 
+def test_processing_retries_do_not_starve_waiting_archives(tmp_path, monkeypatch):
+    clock = [datetime(2026, 11, 6, 10, tzinfo=UTC)]
+    sessions = [
+        ScheduledSession(2026, number, "Grand Prix", "R", clock[0] - timedelta(days=10))
+        for number in (16, 17, 18, 19)
+    ]
+    runner = FakePreparationRunner()
+    recorder = Recorder(_config(tmp_path), now=lambda: clock[0], preparation_runner=runner)
+    for session in sessions:
+        recorder.store.transition(session.session_id, Phase.RECORDING, clock[0])
+        recorder.store.transition(session.session_id, Phase.CAPTURED, clock[0])
+    monkeypatch.setattr(
+        "racelens.recorder.worker.load_fastf1_schedule", lambda _year: sessions,
+    )
+    for session in sessions:
+        assert recorder.run_once() == f"processing started: {session.session_id}"
+        clock[0] += timedelta(minutes=20)
+        runner.outcome = PreparationOutcome(session.session_id, "upstream unavailable")
+        assert recorder.run_once().startswith("processing failed:")
+        clock[0] += timedelta(minutes=20)
+    assert runner.starts == [session.session_id for session in sessions]
+
+
 def test_preparation_failure_does_not_replace_another_session_live_pointer(
     tmp_path, monkeypatch,
 ):

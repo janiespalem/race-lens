@@ -10,6 +10,7 @@ from bisect import bisect_right
 from collections.abc import Iterable
 import json
 import sys
+import urllib.request
 from math import isfinite
 from pathlib import Path
 from statistics import median
@@ -163,6 +164,32 @@ def _geometry_lap(session):
     return lap, lap.get_pos_data()
 
 
+def _circuit_corners(session, year: int) -> list[dict[str, int | float]]:
+    try:
+        circuit = session.session_info["Meeting"]["Circuit"]
+        key = circuit["Key"]
+        if key == 149 and circuit.get("ShortName") == "Mugello":
+            key = 146
+        url = f"https://api.multiviewer.app/api/v1/circuits/{int(key)}/{year}"
+        # FastF1's optional annotation request has no socket timeout.
+        with urllib.request.urlopen(url, timeout=10) as response:
+            data = json.loads(response.read(1_048_576))
+        if not isinstance(data, dict):
+            raise ValueError("invalid circuit annotations")
+        corners = [
+            {"number": int(row["number"]),
+             "x": float(row["trackPosition"]["x"]),
+             "y": float(row["trackPosition"]["y"])}
+            for row in data.get("corners", [])
+        ]
+        if any(not isfinite(row[axis]) for row in corners for axis in ("x", "y")):
+            raise ValueError("non-finite circuit corner")
+        return corners
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(f"circuit annotations unavailable: {type(exc).__name__}", file=sys.stderr)
+        return []
+
+
 def build_track_outline(year: int, gp: str, session: str, session_id: str) -> dict[str, Any]:
     """Fastest-lap X/Y → the .track.json payload (outline points + corners)."""
     ses = _load_session(year, gp, session)
@@ -224,16 +251,12 @@ def build_track_outline(year: int, gp: str, session: str, session_id: str) -> di
         points.append(points[0])
 
     # Corners (turn numbers) — same normalization as points
-    corners = []
-    try:
-        circuit_info = ses.get_circuit_info()
-        if circuit_info is not None and hasattr(circuit_info, "corners"):
-            for _, row in circuit_info.corners.iterrows():
-                cx = round(offset_x + (float(row["X"]) - x_min) * scale, 1)
-                cy = round(VH - (offset_y + (float(row["Y"]) - y_min) * scale), 1)
-                corners.append({"number": int(row["Number"]), "x": cx, "y": cy})
-    except Exception:
-        corners = []
+    corners = [
+        {"number": row["number"],
+         "x": round(offset_x + (row["x"] - x_min) * scale, 1),
+         "y": round(VH - (offset_y + (row["y"] - y_min) * scale), 1)}
+        for row in _circuit_corners(ses, year)
+    ]
 
     return {
         "session_id": session_id,

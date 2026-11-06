@@ -1044,7 +1044,10 @@ class Recorder:
 
         # A due processing retry must not starve behind successive capture guards.
         # Other archive work still yields while a capture is approaching.
-        for session_id, item in state.sessions.items():
+        # A recently failed low-ID session must not monopolize the next slot.
+        for session_id, item in sorted(
+            state.sessions.items(), key=lambda entry: (entry[1].updated_at, entry[0]),
+        ):
             if approaching_capture and session_id not in due_processing_retries:
                 continue
             due = state.due_phase(session_id, now)
